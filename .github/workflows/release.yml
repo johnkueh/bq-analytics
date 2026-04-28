@@ -25,11 +25,13 @@ jobs:
           registry-url: https://registry.npmjs.org
 
       # Trusted publishing requires npm >= 11.5.1 (OIDC token exchange on
-      # `npm publish`). Node 22 LTS ships with npm 10.x by default, which
-      # silently sends an unauth'd PUT and gets a misleading 404 back from
-      # the registry. Explicitly upgrade.
-      - name: Upgrade npm
-        run: npm install -g npm@latest
+      # `npm publish`). Node 22 LTS ships with npm 10.x, which silently
+      # sends an unauth'd PUT and gets a misleading 404 from the registry.
+      # Pin to an npm 11.x build that supports OIDC; `npm@latest` triggers
+      # a self-upgrade bug ("Cannot find module 'promise-retry'") on
+      # GitHub-hosted runners shipping npm 10.x.
+      - name: Upgrade npm to 11.x
+        run: npm install -g npm@11
 
       - name: Install
         run: pnpm install --frozen-lockfile
