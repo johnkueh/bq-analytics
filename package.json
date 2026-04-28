@@ -1,0 +1,98 @@
+{
+  "name": "bq-analytics",
+  "version": "0.1.0",
+  "description": "Tiny analytics SDK that sends events directly to BigQuery. PostHog/Segment-shaped API, ~$0/month at indie scale, queryable with bq CLI.",
+  "license": "MIT",
+  "type": "module",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./browser": {
+      "types": "./dist/transports/browser.d.ts",
+      "import": "./dist/transports/browser.js"
+    },
+    "./react-native": {
+      "types": "./dist/transports/react-native.d.ts",
+      "import": "./dist/transports/react-native.js"
+    },
+    "./next": {
+      "types": "./dist/handlers/next.d.ts",
+      "import": "./dist/handlers/next.js"
+    },
+    "./hono": {
+      "types": "./dist/handlers/hono.d.ts",
+      "import": "./dist/handlers/hono.js"
+    },
+    "./pino": {
+      "types": "./dist/transports/pino.d.ts",
+      "import": "./dist/transports/pino.js"
+    },
+    "./cli": {
+      "types": "./dist/cli/attach.d.ts",
+      "import": "./dist/cli/attach.js"
+    },
+    "./auth": {
+      "types": "./dist/auth.d.ts",
+      "import": "./dist/auth.js"
+    },
+    "./insert": {
+      "types": "./dist/insert.d.ts",
+      "import": "./dist/insert.js"
+    }
+  },
+  "files": [
+    "dist",
+    "sql",
+    "scripts",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "prepare": "tsup",
+    "dev": "tsup --watch",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:integration": "BQ_INTEGRATION=1 vitest run tests/integration",
+    "typecheck": "tsc --noEmit",
+    "smoke": "tsx examples/cli-smoke/send-events.ts",
+    "smoke:query": "tsx examples/cli-smoke/query.ts",
+    "smoke:cli-error": "tsx examples/cli-smoke/cli-error.ts",
+    "smoke:pino": "tsx examples/cli-smoke/pino-test.ts",
+    "sync-skills": "./scripts/sync-skills.sh"
+  },
+  "dependencies": {},
+  "peerDependencies": {
+    "next": ">=14",
+    "pino": ">=8"
+  },
+  "peerDependenciesMeta": {
+    "next": { "optional": true },
+    "pino": { "optional": true }
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "pino": "^9.5.0",
+    "tsup": "^8.3.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0",
+    "vitest": "^2.1.0"
+  },
+  "keywords": [
+    "analytics",
+    "bigquery",
+    "posthog-alternative",
+    "segment-alternative",
+    "vercel",
+    "telemetry",
+    "events"
+  ],
+  "engines": {
+    "node": ">=20"
+  }
+}

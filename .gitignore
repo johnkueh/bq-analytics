@@ -1,0 +1,27 @@
+node_modules
+dist
+coverage
+.DS_Store
+
+# Env files — never commit secrets
+.env
+.env.*
+!.env.example
+
+# Editor
+.idea
+.vscode
+*.swp
+
+# Logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# Test artifacts
+.vitest-cache
+*.tsbuildinfo
+
+# Smoke test scratch
+.smoke-output.json
+*.tgz
