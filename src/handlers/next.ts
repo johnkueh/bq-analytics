@@ -166,14 +166,25 @@ export interface LogDrainRouteOptions {
 export function createLogDrainRoute(opts: LogDrainRouteOptions) {
   const dataset = opts.logsDataset ?? "logs";
 
+  // Vercel's drain validator probes via GET, HEAD, **and POST**, and
+  // requires *every* response to carry `x-vercel-verify: <team-token>`.
+  // Stamp the header on every Response we hand back so validation passes
+  // regardless of method.
+  const stamp = (res: Response): Response => {
+    if (opts.vercelVerifyToken) {
+      res.headers.set("x-vercel-verify", opts.vercelVerifyToken);
+    }
+    return res;
+  };
+
   async function POST(req: Request): Promise<Response> {
     if (req.headers.get("x-drain-secret") !== opts.secret) {
-      return json({ error: "forbidden" }, 403);
+      return stamp(json({ error: "forbidden" }, 403));
     }
 
     const text = await req.text();
     const lines = text.trim().split("\n").filter(Boolean);
-    if (lines.length === 0) return json({ ok: true, accepted: 0 });
+    if (lines.length === 0) return stamp(json({ ok: true, accepted: 0 }));
 
     const rows = lines.map((line) => parseDrainLine(line));
 
@@ -181,16 +192,14 @@ export function createLogDrainRoute(opts: LogDrainRouteOptions) {
       const { insertRows } = await import("../insert.js");
       await insertRows({ projectId: opts.projectId }, dataset, "raw", rows);
     } catch (err) {
-      return json({ error: "insert failed", detail: (err as Error).message }, 502);
+      return stamp(json({ error: "insert failed", detail: (err as Error).message }, 502));
     }
-    return json({ ok: true, accepted: rows.length });
+    return stamp(json({ ok: true, accepted: rows.length }));
   }
 
   function GET(req: Request): Response {
-    // Vercel's drain-creation validator probes this URL with no headers and
-    // expects the response to carry `x-vercel-verify: <team-token>`. If the
-    // user passed `vercelVerifyToken` we always send it. As a fallback we
-    // echo back whatever they sent (legacy validation flow).
+    // Same response shape used for HEAD probes (Next.js auto-derives HEAD
+    // from GET and copies our headers).
     const verify = opts.vercelVerifyToken ?? req.headers.get("x-vercel-verify") ?? "";
     return new Response(null, {
       status: 200,

@@ -222,6 +222,39 @@ describe("createLogDrainRoute", () => {
     const res = GET(new Request("http://x/api/internal/log-drain"));
     expect(res.status).toBe(200);
   });
+
+  it("POST forbidden response carries x-vercel-verify (validator probes via POST too)", async () => {
+    const { POST } = createLogDrainRoute({
+      projectId: "p",
+      secret: "right",
+      vercelVerifyToken: "team-token-xyz",
+    });
+    const res = await POST(
+      new Request("http://x/api/internal/log-drain", {
+        method: "POST",
+        body: "",
+      }),
+    );
+    expect(res.status).toBe(403);
+    expect(res.headers.get("x-vercel-verify")).toBe("team-token-xyz");
+  });
+
+  it("POST 200 response also carries x-vercel-verify", async () => {
+    const { POST } = createLogDrainRoute({
+      projectId: "p",
+      secret: "right",
+      vercelVerifyToken: "team-token-xyz",
+    });
+    const res = await POST(
+      new Request("http://x/api/internal/log-drain", {
+        method: "POST",
+        headers: { "x-drain-secret": "right" },
+        body: "",
+      }),
+    );
+    expect(res.status).toBe(200);
+    expect(res.headers.get("x-vercel-verify")).toBe("team-token-xyz");
+  });
 });
 
 describe("parseDrainLine", () => {
