@@ -3,6 +3,14 @@
   "version": "0.1.1",
   "description": "Tiny analytics SDK that sends events directly to BigQuery. PostHog/Segment-shaped API, ~$0/month at indie scale, queryable with bq CLI.",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/johnkueh/bq-analytics.git"
+  },
+  "homepage": "https://github.com/johnkueh/bq-analytics",
+  "bugs": {
+    "url": "https://github.com/johnkueh/bq-analytics/issues"
+  },
   "type": "module",
   "main": "./dist/index.js",
   "module": "./dist/index.js",
