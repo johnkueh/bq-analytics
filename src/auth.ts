@@ -1,4 +1,9 @@
-import { createSign } from "node:crypto";
+// IMPORTANT: do NOT import node:crypto / node:child_process at top-level.
+// React Native + browser bundlers (Metro, Webpack) statically analyse top-
+// level imports and choke on `node:` specifiers — even though RN consumers
+// only use httpTransport and never reach the server-only auth paths below.
+// We use string-variable dynamic imports inside the (Node-only) functions
+// that need them, which bundlers cannot statically resolve.
 
 interface CachedToken {
   token: string;
@@ -103,6 +108,12 @@ async function exchangeVercelOidc(oidcToken: string, scope: string): Promise<Cac
 }
 
 async function fromServiceAccountJson(json: string, scope: string): Promise<CachedToken> {
+  if (typeof process === "undefined" || !process.versions?.node) {
+    throw new Error("Service account JSON auth is Node.js-only");
+  }
+  // String-variable form so RN/browser bundlers don't try to resolve at build time.
+  const cryptoModuleId = "node:" + "crypto";
+  const { createSign } = (await import(cryptoModuleId)) as typeof import("node:crypto");
   const creds = JSON.parse(json) as { client_email: string; private_key: string };
   const now = Math.floor(Date.now() / 1000);
   const claims = {
@@ -134,7 +145,12 @@ async function fromServiceAccountJson(json: string, scope: string): Promise<Cach
 }
 
 async function fromAdc(scope: string): Promise<CachedToken> {
-  const { execSync } = await import("node:child_process");
+  if (typeof process === "undefined" || !process.versions?.node) {
+    throw new Error("ADC auth is Node.js-only");
+  }
+  // String-variable form so RN/browser bundlers don't try to resolve at build time.
+  const childProcId = "node:" + "child_process";
+  const { execSync } = (await import(childProcId)) as typeof import("node:child_process");
   try {
     const token = execSync(
       `gcloud auth application-default print-access-token --scopes=${scope}`,
