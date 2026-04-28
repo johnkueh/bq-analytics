@@ -1,5 +1,32 @@
 export type Props = Record<string, unknown>;
 
+/**
+ * UUID-shaped random string. Uses globalThis.crypto.randomUUID where
+ * available (Node 18+, modern browsers, RN with a polyfill). Falls back
+ * to a Math.random-based UUIDv4 for environments without crypto in scope
+ * (Hermes-based React Native by default, older bundlers, etc.).
+ *
+ * Not cryptographically random — that's fine for analytics event IDs,
+ * which exist for de-duplication, not authentication.
+ */
+export function randomId(): string {
+  if (typeof globalThis !== "undefined") {
+    const c = (globalThis as { crypto?: { randomUUID?: () => string } }).crypto;
+    if (c && typeof c.randomUUID === "function") return c.randomUUID();
+  }
+  // UUIDv4 shape: xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx where y ∈ {8,9,a,b}
+  const r = (n: number) => Math.floor(Math.random() * n);
+  const hex = "0123456789abcdef";
+  let out = "";
+  for (let i = 0; i < 36; i++) {
+    if (i === 8 || i === 13 || i === 18 || i === 23) out += "-";
+    else if (i === 14) out += "4";
+    else if (i === 19) out += hex[r(4) | 8];
+    else out += hex[r(16)];
+  }
+  return out;
+}
+
 export interface BaseAttrs {
   userId?: string | null;
   anonymousId?: string | null;

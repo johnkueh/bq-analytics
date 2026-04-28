@@ -11,6 +11,7 @@ import type {
   Transport,
   UserGroupRow,
 } from "./types.js";
+import { randomId } from "./types.js";
 
 export type {
   AnalyticsConfig,
@@ -39,7 +40,7 @@ export class Analytics {
 
   track(event: string, properties: Props = {}, attrs: BaseAttrs = {}): void {
     const row: EventRow = {
-      event_id: crypto.randomUUID(),
+      event_id: randomId(),
       ts: nowIso(),
       event_name: event,
       user_id: attrs.userId ?? null,

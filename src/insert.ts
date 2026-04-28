@@ -1,4 +1,5 @@
 import { getAccessToken } from "./auth.js";
+import { randomId } from "./types.js";
 
 export interface InsertConfig {
   projectId: string;
@@ -26,7 +27,7 @@ export async function insertRows<T extends Record<string, unknown>>(
   const body = {
     rows: rows.map((json, i) => ({
       json,
-      insertId: insertIds?.[i] ?? crypto.randomUUID(),
+      insertId: insertIds?.[i] ?? randomId(),
     })),
     skipInvalidRows: options.skipInvalidRows ?? false,
     ignoreUnknownValues: options.ignoreUnknownValues ?? false,
