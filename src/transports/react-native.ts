@@ -114,22 +114,40 @@ interface AppStateLike {
 }
 
 /**
+ * Static or dynamically-resolved attribute bag passed alongside each event
+ * fired by `attachExpoErrorHandler` / `attachAppStateFlush`. Pass a function
+ * when the values can change after attach (typical for `userId` — identity
+ * usually loads asynchronously after the analytics instance is wired up).
+ */
+type AttrsOrGetter = Record<string, unknown> | (() => Record<string, unknown>);
+
+function resolveAttrs(attrs: AttrsOrGetter): Record<string, unknown> {
+  return typeof attrs === "function" ? attrs() : attrs;
+}
+
+/**
  * Capture RN uncaught JS errors via ErrorUtils.setGlobalHandler.
  *
  * Pass `ErrorUtils` (it's a global in RN) and (optionally) extra context.
+ * Pass `context` as a function when its values can change after attach
+ * (e.g. `userId` from an identity provider that loads asynchronously) —
+ * the function is called every time an error fires.
  *
  * ```ts
  * import { Analytics } from "bq-analytics";
  * import { reactNativeTransport, attachExpoErrorHandler } from "bq-analytics/react-native";
  *
  * const a = new Analytics({ transport: reactNativeTransport({ url, storage: AsyncStorage }) });
- * attachExpoErrorHandler(a, ErrorUtils, { platform: Platform.OS, version: Constants.expoConfig?.version });
+ * attachExpoErrorHandler(a, ErrorUtils, () => ({
+ *   platform: Platform.OS,
+ *   userId: getCurrentIdentity()?.id,
+ * }));
  * ```
  */
 export function attachExpoErrorHandler(
   analytics: RNAnalyticsLike,
   errorUtils: ErrorUtilsLike,
-  context: Record<string, unknown> = {},
+  context: AttrsOrGetter = {},
   opts: { source?: string } = {},
 ) {
   const source = opts.source ?? "rn";
@@ -144,7 +162,7 @@ export function attachExpoErrorHandler(
         stack: isErr ? error.stack ?? null : null,
         fatal: !!isFatal,
         kind: "uncaught_exception",
-        ...context,
+        ...resolveAttrs(context),
       },
       source,
     );
@@ -160,21 +178,24 @@ export function attachExpoErrorHandler(
 /**
  * Track RN AppState transitions and flush when the app backgrounds.
  *
+ * Pass `attrs` as a function when its values can change after attach
+ * (e.g. identity loads asynchronously) — it's invoked every state change.
+ *
  * ```ts
  * import { AppState } from "react-native";
- * attachAppStateFlush(a, AppState, { userId });
+ * attachAppStateFlush(a, AppState, () => ({ userId: getCurrentIdentity()?.id }));
  * ```
  */
 export function attachAppStateFlush(
   analytics: RNAnalyticsLike,
   appState: AppStateLike,
-  attrs: Record<string, unknown> = {},
+  attrs: AttrsOrGetter = {},
   opts: { trackEvents?: boolean } = {},
 ) {
   const trackEvents = opts.trackEvents ?? true;
   const sub = appState.addEventListener("change", (state) => {
     if (trackEvents) {
-      analytics.track("app.state_changed", { state }, attrs);
+      analytics.track("app.state_changed", { state }, resolveAttrs(attrs));
     }
     if (state === "background" || state === "inactive") {
       void analytics.flush();
