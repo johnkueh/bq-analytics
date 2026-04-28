@@ -12,18 +12,23 @@ This skill has two phases. **Both are required.** Phase 1 puts the pipes in plac
 
 ## Step 0 — Detect the runtime
 
-Look at the repo to decide which path to follow. Don't assume Next.js / Vercel.
+bq-analytics' first-class server target is **Next.js App Router on Vercel** — the route factories (`createTrackRoute`, `createLogDrainRoute`) are designed for that, and the setup script provisions Vercel-specific env vars + a Vercel Log Drain. Other server frameworks work but require user-written adapters (the SDK ships generic `Request → Response` handlers; mapping into Hono / Express / Fastify is a few lines, see README).
 
-| Signal | Stack |
-|---|---|
-| `next.config.*` exists, `next` in dependencies | **Next.js** (likely on Vercel) |
-| `express`, `hono`, `fastify`, `koa` in dependencies | **Node server (non-Next)** — use pino |
-| `expo` or `react-native` in dependencies, `app.json` | **Expo / RN** |
-| no server framework, has `bin` field in package.json or `tsx`/`ts-node` scripts | **Node CLI** |
-| `pyproject.toml`, `Gemfile`, `go.mod` etc. | **Non-Node** — POST to `/api/track` directly |
-| HTML page with `<script>` only | **Browser-only** |
+Look at the repo to decide which path to follow.
 
-A project may be a mix (e.g. Next.js + Expo monorepo) — install both paths.
+| Signal | Stack | First-class? |
+|---|---|---|
+| `next.config.*` + `next` in dependencies | **Next.js** (likely on Vercel) | ✅ Yes — full install path |
+| `express`, `fastify`, `koa` in deps, no Next | **Node server (non-Next)** | ⚠️ Partial — adapter required for the route handlers; pure server-side `bqTransport` works as-is |
+| `hono` in deps, no Next | **Hono** (any runtime) | ⚠️ Partial — `bq-analytics/hono` middleware works; `c.req.raw` lets you call route factories directly |
+| `expo` / `react-native` + `app.json` | **Expo / RN** (client SDK) | ✅ Yes — uses `httpTransport` to talk to a *separate* Next.js server |
+| no server framework, `bin` / `tsx` / `ts-node` scripts | **Node CLI** | ✅ Yes — calls `bqTransport` directly, no route needed |
+| `pyproject.toml`, `Gemfile`, `go.mod` | **Non-Node** | ⚠️ Manual — POST JSON to `/api/track` from any language |
+| HTML page with `<script>` only | **Browser-only** | ✅ Yes via `httpTransport` to a Next.js server |
+
+If the project doesn't have a Next.js server **and** has client-side calls (browser/RN), the user needs a Next.js (or other Web-standard) server to host `/api/track` somewhere — explain this before proceeding. Common pattern: a single Next.js project hosts the route, and Expo / RN apps point their `httpTransport` at it.
+
+A project may be a mix (e.g. Next.js web + Expo monorepo) — install the server route in the Next.js side, the client SDK in the Expo side, both pointed at the same backend.
 
 ## Common preflight (every stack)
 
