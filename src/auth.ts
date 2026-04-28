@@ -1,9 +1,16 @@
-// IMPORTANT: do NOT import node:crypto / node:child_process at top-level.
-// React Native + browser bundlers (Metro, Webpack) statically analyse top-
-// level imports and choke on `node:` specifiers — even though RN consumers
-// only use httpTransport and never reach the server-only auth paths below.
-// We use string-variable dynamic imports inside the (Node-only) functions
-// that need them, which bundlers cannot statically resolve.
+// IMPORTANT: do NOT import node:crypto / node:child_process / @vercel/oidc
+// at top-level. React Native + browser bundlers (Metro, Webpack, esbuild)
+// statically analyse imports and choke on `node:` specifiers — even though
+// RN consumers only use httpTransport and never reach the server-only auth
+// paths below.
+//
+// `dynImport()` defeats static analysis by routing through `new Function`,
+// which bundlers cannot trace into. Const-string `await import(x)` did NOT
+// work — esbuild's constant folding inlines the variable, then Metro's
+// resolver fires on the inlined literal.
+const dynImport = <T = unknown>(specifier: string): Promise<T> =>
+  // eslint-disable-next-line @typescript-eslint/no-implied-eval
+  new Function("s", "return import(s)")(specifier) as Promise<T>;
 
 interface CachedToken {
   token: string;
@@ -56,21 +63,19 @@ async function readVercelOidcToken(): Promise<string | null> {
   // surfaced by @vercel/functions/oidc. Optional dep — if not installed
   // we just return null and the caller falls through to other auth paths.
   //
-  // String-variable form so RN/browser bundlers don't try to resolve
-  // @vercel/functions/oidc at build time. That package imports node:path
-  // / node:fs / etc., so static resolution makes Metro choke even when
-  // the RN consumer never reaches this code path at runtime.
+  // dynImport() (new Function) hides the specifier from bundlers — RN/
+  // browser bundles never see "@vercel/functions/oidc" at build time, so
+  // they never try to resolve its transitive node: imports.
   try {
-    const oidcModuleId = "@vercel/functions" + "/oidc";
-    const mod = (await import(oidcModuleId)) as {
+    const mod = await dynImport<{
       getVercelOidcToken?: () => Promise<string | null | undefined>;
-    };
+    }>("@vercel/functions/oidc");
     if (typeof mod.getVercelOidcToken === "function") {
       const tok = await mod.getVercelOidcToken();
       return tok || null;
     }
   } catch {
-    // not installed in this project, or unresolvable in this bundler
+    // not installed in this project, or unresolvable in this runtime
   }
   return null;
 }
@@ -119,9 +124,7 @@ async function fromServiceAccountJson(json: string, scope: string): Promise<Cach
   if (typeof process === "undefined" || !process.versions?.node) {
     throw new Error("Service account JSON auth is Node.js-only");
   }
-  // String-variable form so RN/browser bundlers don't try to resolve at build time.
-  const cryptoModuleId = "node:" + "crypto";
-  const { createSign } = (await import(cryptoModuleId)) as typeof import("node:crypto");
+  const { createSign } = await dynImport<typeof import("node:crypto")>("node:crypto");
   const creds = JSON.parse(json) as { client_email: string; private_key: string };
   const now = Math.floor(Date.now() / 1000);
   const claims = {
@@ -156,9 +159,7 @@ async function fromAdc(scope: string): Promise<CachedToken> {
   if (typeof process === "undefined" || !process.versions?.node) {
     throw new Error("ADC auth is Node.js-only");
   }
-  // String-variable form so RN/browser bundlers don't try to resolve at build time.
-  const childProcId = "node:" + "child_process";
-  const { execSync } = (await import(childProcId)) as typeof import("node:child_process");
+  const { execSync } = await dynImport<typeof import("node:child_process")>("node:child_process");
   try {
     const token = execSync(
       `gcloud auth application-default print-access-token --scopes=${scope}`,
