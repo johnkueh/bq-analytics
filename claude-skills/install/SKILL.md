@@ -118,14 +118,18 @@ export const POST = createTrackRoute({
 **`src/app/api/internal/log-drain/route.ts`**
 ```ts
 import { createLogDrainRoute } from "bq-analytics/next";
-// MUST export both POST and GET — Vercel's drain creation validates the URL
-// by sending GET with `x-vercel-verify` and expects it echoed back. Without
-// the GET handler, drain creation fails with "Cannot validate endpoint url".
+// MUST export both POST and GET. Vercel's modern drain creation validator
+// probes GET with NO incoming headers and expects the response to carry
+// `x-vercel-verify: <team-token>`. The setup script auto-fetches the token
+// from your team and pushes it as VERCEL_VERIFY_TOKEN — pass it through.
 export const { POST, GET } = createLogDrainRoute({
   projectId: process.env.GCP_PROJECT_ID,
   secret: process.env.LOG_DRAIN_SECRET!,
+  vercelVerifyToken: process.env.VERCEL_VERIFY_TOKEN,
 });
 ```
+
+If `VERCEL_VERIFY_TOKEN` isn't set, the setup script will detect this on drain creation, parse the expected token from Vercel's 422 response, push it as an env var, and tell you to redeploy + re-run with `--drain-only`.
 
 ⚠️ **Never `console.log` inside POST** — drained lines are themselves drained, infinite loop. `console.error` on real errors only.
 

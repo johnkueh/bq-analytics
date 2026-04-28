@@ -179,7 +179,7 @@ describe("createLogDrainRoute", () => {
     expect(res.status).toBe(200);
   });
 
-  it("GET echoes x-vercel-verify for drain endpoint validation", () => {
+  it("GET echoes x-vercel-verify when no static token configured", () => {
     const { GET } = createLogDrainRoute({ projectId: "p", secret: "right" });
     const res = GET(
       new Request("http://x/api/internal/log-drain", {
@@ -191,7 +191,33 @@ describe("createLogDrainRoute", () => {
     expect(res.headers.get("x-vercel-verify")).toBe("verify-token-123");
   });
 
-  it("GET responds 200 even without verify header", () => {
+  it("GET returns the static vercelVerifyToken regardless of request headers", () => {
+    const { GET } = createLogDrainRoute({
+      projectId: "p",
+      secret: "right",
+      vercelVerifyToken: "team-static-token-xyz",
+    });
+    // No incoming header — Vercel's modern validator does not send one
+    const res = GET(new Request("http://x/api/internal/log-drain"));
+    expect(res.status).toBe(200);
+    expect(res.headers.get("x-vercel-verify")).toBe("team-static-token-xyz");
+  });
+
+  it("GET prefers static token over request header (so a probe can't override)", () => {
+    const { GET } = createLogDrainRoute({
+      projectId: "p",
+      secret: "right",
+      vercelVerifyToken: "configured",
+    });
+    const res = GET(
+      new Request("http://x/api/internal/log-drain", {
+        headers: { "x-vercel-verify": "incoming" },
+      }),
+    );
+    expect(res.headers.get("x-vercel-verify")).toBe("configured");
+  });
+
+  it("GET responds 200 even without verify header or token", () => {
     const { GET } = createLogDrainRoute({ projectId: "p", secret: "right" });
     const res = GET(new Request("http://x/api/internal/log-drain"));
     expect(res.status).toBe(200);

@@ -122,6 +122,21 @@ export interface LogDrainRouteOptions {
   logsDataset?: string;
   /** Shared secret expected on `x-drain-secret` header. */
   secret: string;
+  /**
+   * Team-level `x-vercel-verify` token. **Required for new Vercel projects.**
+   *
+   * Vercel's drain-creation validator probes the URL with a GET (no headers)
+   * and requires the response to carry `x-vercel-verify: <team-token>`. Find
+   * yours by checking https://vercel.com/<team>/~/settings (search "verify")
+   * or by attempting to create a drain — Vercel's 422 response includes the
+   * expected token. The setup script auto-pushes this as the
+   * `VERCEL_VERIFY_TOKEN` env var.
+   *
+   * If omitted, GET falls back to echoing whatever `x-vercel-verify` is in
+   * the request — which works for some legacy Vercel teams but fails the
+   * modern creation flow.
+   */
+  vercelVerifyToken?: string;
 }
 
 /**
@@ -172,9 +187,11 @@ export function createLogDrainRoute(opts: LogDrainRouteOptions) {
   }
 
   function GET(req: Request): Response {
-    // Vercel's drain validation calls GET with `x-vercel-verify: <token>`
-    // and expects the same value echoed back in the response header.
-    const verify = req.headers.get("x-vercel-verify") ?? "";
+    // Vercel's drain-creation validator probes this URL with no headers and
+    // expects the response to carry `x-vercel-verify: <team-token>`. If the
+    // user passed `vercelVerifyToken` we always send it. As a fallback we
+    // echo back whatever they sent (legacy validation flow).
+    const verify = opts.vercelVerifyToken ?? req.headers.get("x-vercel-verify") ?? "";
     return new Response(null, {
       status: 200,
       headers: { "x-vercel-verify": verify },

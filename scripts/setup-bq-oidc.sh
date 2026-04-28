@@ -277,6 +277,22 @@ push_env_rest GCP_WORKLOAD_IDENTITY_POOL_PROVIDER_ID "$PROVIDER_ID"
 push_env_rest BQ_EVENTS_DATASET                  "$EVENTS_DATASET"
 push_env_rest BQ_LOGS_DATASET                    "$LOGS_DATASET"
 
+# Team-level x-vercel-verify token. Vercel's modern drain validator probes
+# the URL with a GET (no headers) and requires the response to carry
+# `x-vercel-verify: <team-token>`. Pushing it now lets the route handler
+# return it unconditionally via createLogDrainRoute({ vercelVerifyToken }).
+VERCEL_VERIFY_TOKEN_VAL=$(curl -sH "Authorization: Bearer $VERCEL_TOKEN" \
+  "https://api.vercel.com/v2/teams/${VERCEL_TEAM_ID}" \
+  | jq -r '.x_vercel_verify // empty' 2>/dev/null || true)
+if [[ -n "$VERCEL_VERIFY_TOKEN_VAL" ]]; then
+  push_env_rest VERCEL_VERIFY_TOKEN              "$VERCEL_VERIFY_TOKEN_VAL"
+else
+  yellow "  could not auto-fetch VERCEL_VERIFY_TOKEN from team API."
+  yellow "  Drain creation may fail validation; if so, get the token from the"
+  yellow "  422 response body and run:"
+  yellow "    echo '<token>' | vercel env add VERCEL_VERIFY_TOKEN production"
+fi
+
 }  # end of "not drain-only" block
 
 # ===========================================================================
@@ -336,17 +352,31 @@ else
   red "  log drain creation failed (HTTP ${DRAIN_HTTP}):"
   printf '%s\n' "$DRAIN_BODY_RESP" | jq . 2>/dev/null || printf '%s\n' "$DRAIN_BODY_RESP"
   echo
-  yellow "  Most likely the route URL isn't deployed yet. Vercel validates the URL"
-  yellow "  during drain creation by sending GET with x-vercel-verify and expecting"
-  yellow "  the same value echoed back (createLogDrainRoute exports a GET handler"
-  yellow "  that does this automatically)."
-  echo
-  yellow "  Fix:"
-  yellow "    1. Make sure POST=GET={...createLogDrainRoute(...)} is exported from"
-  yellow "       src/app/api/internal/log-drain/route.ts"
-  yellow "    2. Deploy the project (env vars are already set; deploy is safe)"
-  yellow "    3. Re-run with --drain-only:"
-  yellow "         $0 --drain-only --gcp $GCP_PROJECT_ID --team $TEAM_SLUG --project $PROJECT_NAME --domain $PROJECT_DOMAIN"
+
+  # Try to extract verify token from the error response (40-char hex blob)
+  TOK=$(printf '%s' "$DRAIN_BODY_RESP" | grep -oE '[a-f0-9]{40}' | head -1)
+  if [[ -n "$TOK" ]]; then
+    yellow "  Detected expected x-vercel-verify token in error response: $TOK"
+    yellow "  Pushing as VERCEL_VERIFY_TOKEN..."
+    push_env_rest VERCEL_VERIFY_TOKEN "$TOK"
+    yellow ""
+    yellow "  Now:"
+    yellow "    1. Make sure src/app/api/internal/log-drain/route.ts passes the token:"
+    yellow "         createLogDrainRoute({"
+    yellow "           ...,"
+    yellow "           vercelVerifyToken: process.env.VERCEL_VERIFY_TOKEN,"
+    yellow "         });"
+    yellow "    2. git push to redeploy with the new env var"
+    yellow "    3. Re-run with --drain-only:"
+    yellow "         $0 --drain-only --gcp $GCP_PROJECT_ID --team $TEAM_SLUG --project $PROJECT_NAME --domain $PROJECT_DOMAIN"
+  else
+    yellow "  Vercel validates drain URLs by GET-probing them and requiring the"
+    yellow "  response to carry x-vercel-verify: <team-token>. Likely causes:"
+    yellow "    - The route URL isn't deployed yet — deploy first, then re-run --drain-only"
+    yellow "    - Or VERCEL_VERIFY_TOKEN env var wasn't pushed (check above)"
+    yellow ""
+    yellow "  Confirm POST + GET are both exported from your log-drain/route.ts."
+  fi
   exit 1
 fi
 
