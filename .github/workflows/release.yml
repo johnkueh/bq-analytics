@@ -24,6 +24,13 @@ jobs:
           node-version: 22
           registry-url: https://registry.npmjs.org
 
+      # Trusted publishing requires npm >= 11.5.1 (OIDC token exchange on
+      # `npm publish`). Node 22 LTS ships with npm 10.x by default, which
+      # silently sends an unauth'd PUT and gets a misleading 404 back from
+      # the registry. Explicitly upgrade.
+      - name: Upgrade npm
+        run: npm install -g npm@latest
+
       - name: Install
         run: pnpm install --frozen-lockfile
 
