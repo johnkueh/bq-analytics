@@ -378,7 +378,7 @@ Option B is preferred — Vercel's `after()` keeps the function alive long enoug
 The server entry resolves credentials in this order:
 
 1. `BQA_ACCESS_TOKEN` env var (explicit override — useful for local smoke runs)
-2. `VERCEL_OIDC_TOKEN` (production / preview / development on Vercel) → STS exchange + service account impersonation
+2. **Vercel OIDC token** (production / preview / development on Vercel). Modern Vercel runtimes don't expose this as an env var — fetched per-request via `@vercel/functions/oidc`'s `getVercelOidcToken()`. Make sure `@vercel/functions` is in your project's dependencies. Older runtimes that still set `VERCEL_OIDC_TOKEN` env var also work as a fallback. The fetched JWT is exchanged through Google STS + service-account impersonation.
 3. `GOOGLE_APPLICATION_CREDENTIALS_JSON` (service-account JSON pasted into env, for non-Vercel deployments)
 4. Application Default Credentials (`gcloud auth application-default login` for local dev)
 

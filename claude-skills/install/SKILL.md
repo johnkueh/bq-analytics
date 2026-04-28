@@ -30,6 +30,7 @@ A project may be a mix (e.g. Next.js + Expo monorepo) — install both paths.
 1. **Confirm GCP project.** Run `gcloud projects list --format='value(projectId)'`. **Verify billing is enabled** with `gcloud billing projects describe <id>` — the BQ sandbox / free tier disallows streaming inserts and the SDK will 403.
 2. **For Vercel-hosted stacks**: `vercel whoami` and `vercel ls`. Get a team-scope token from https://vercel.com/account/tokens for setup only — never commit.
 3. **Install the package**: `pnpm add bq-analytics` (published on npm — works on Vercel CI, no extra setup).
+4. **Vercel runtimes only**: also ensure `@vercel/functions` is in your project's dependencies — bq-analytics needs it to read the per-request OIDC token via `getVercelOidcToken()` (modern Vercel doesn't expose `VERCEL_OIDC_TOKEN` as an env var). Most Vercel projects already have it transitively; if not: `pnpm add @vercel/functions`.
 
 ## Provision GCP resources
 
@@ -138,7 +139,7 @@ After step 1 of the setup (env vars pushed to Vercel), pull them locally so `pnp
 vercel env pull .env.local
 ```
 
-The development-environment `VERCEL_OIDC_TOKEN` rotates every ~12 hours. If you see "ID Token … is stale" errors locally, re-run `vercel env pull`. The SDK falls back to a no-op transport when `GCP_PROJECT_ID` is missing (so vitest runs and preview deploys without env vars don't crash) — but that means you'll silently drop events if you forget the pull.
+The Vercel OIDC token rotates every ~12 hours. In `pnpm dev`, the SDK calls `@vercel/functions/oidc`'s `getVercelOidcToken()` which reads from request context — `vercel env pull .env.local` populates the supporting env vars (`GCP_PROJECT_ID`, etc) but the OIDC token itself is fetched dynamically per request. If you see "ID Token … is stale" errors, re-run `vercel env pull` to refresh the dev environment binding. The SDK falls back to a no-op transport when `GCP_PROJECT_ID` is missing (so vitest runs and preview deploys without env vars don't crash) — but that means you'll silently drop events if you forget the pull.
 
 ### Express / Hono / Fastify / Koa / raw Node
 

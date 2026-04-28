@@ -29,18 +29,44 @@ async function fetchToken(scope: string): Promise<CachedToken> {
   if (process.env.BQA_ACCESS_TOKEN) {
     return { token: process.env.BQA_ACCESS_TOKEN, expiresAt: Date.now() + 30 * 60 * 1000 };
   }
-  if (process.env.VERCEL_OIDC_TOKEN) return exchangeVercelOidc(scope);
+
+  // Vercel OIDC. Modern Vercel runtimes do NOT expose VERCEL_OIDC_TOKEN
+  // as an env var — the token is per-request and must be fetched via
+  // `@vercel/functions/oidc`. We try that first, fall back to the env
+  // var for older runtimes / non-Vercel injection paths.
+  const oidc = await readVercelOidcToken();
+  if (oidc) return exchangeVercelOidc(oidc, scope);
+
   if (process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON)
     return fromServiceAccountJson(process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON, scope);
   return fromAdc(scope);
 }
 
-async function exchangeVercelOidc(scope: string): Promise<CachedToken> {
+async function readVercelOidcToken(): Promise<string | null> {
+  // Older runtimes / explicit override
+  if (process.env.VERCEL_OIDC_TOKEN) return process.env.VERCEL_OIDC_TOKEN;
+  // Modern Vercel runtime — token lives in async-local request context,
+  // surfaced by @vercel/functions/oidc. Optional dep — if not installed
+  // we just return null and the caller falls through to other auth paths.
+  try {
+    const mod = (await import("@vercel/functions/oidc")) as {
+      getVercelOidcToken?: () => Promise<string | null | undefined>;
+    };
+    if (typeof mod.getVercelOidcToken === "function") {
+      const tok = await mod.getVercelOidcToken();
+      return tok || null;
+    }
+  } catch {
+    // not installed in this project
+  }
+  return null;
+}
+
+async function exchangeVercelOidc(oidcToken: string, scope: string): Promise<CachedToken> {
   const projectNumber = required("GCP_PROJECT_NUMBER");
   const poolId = required("GCP_WORKLOAD_IDENTITY_POOL_ID");
   const providerId = required("GCP_WORKLOAD_IDENTITY_POOL_PROVIDER_ID");
   const saEmail = required("GCP_SERVICE_ACCOUNT_EMAIL");
-  const oidcToken = process.env.VERCEL_OIDC_TOKEN!;
 
   const sts = await fetch("https://sts.googleapis.com/v1/token", {
     method: "POST",
@@ -117,7 +143,7 @@ async function fromAdc(scope: string): Promise<CachedToken> {
     return { token, expiresAt: Date.now() + 50 * 60 * 1000 };
   } catch (err) {
     throw new Error(
-      "bq-analytics: no auth available. Set VERCEL_OIDC_TOKEN, GOOGLE_APPLICATION_CREDENTIALS_JSON, or run `gcloud auth application-default login`.\n" +
+      "bq-analytics: no auth available. Install @vercel/functions (Vercel runtime), set VERCEL_OIDC_TOKEN env var, set GOOGLE_APPLICATION_CREDENTIALS_JSON, or run `gcloud auth application-default login`.\n" +
         `Underlying error: ${(err as Error).message}`,
     );
   }

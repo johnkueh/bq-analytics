@@ -13,7 +13,7 @@ Reference Next.js 16 App Router setup using bq-analytics. Wires up:
 3. `gcloud auth application-default login` (one-time).
 4. `pnpm dev`.
 
-The route handlers use `BQA_ACCESS_TOKEN` if set (handy for token piping during smoke tests), otherwise fall back through `VERCEL_OIDC_TOKEN` → service-account JSON → ADC.
+The route handlers use `BQA_ACCESS_TOKEN` if set (handy for token piping during smoke tests), otherwise fall back through Vercel OIDC (via `@vercel/functions/oidc` or `VERCEL_OIDC_TOKEN` env) → service-account JSON → ADC.
 
 ## Wire into a real Next.js project
 

@@ -78,7 +78,8 @@
   "dependencies": {},
   "peerDependencies": {
     "next": ">=14",
-    "pino": ">=8"
+    "pino": ">=8",
+    "@vercel/functions": ">=2"
   },
   "peerDependenciesMeta": {
     "next": {
@@ -86,10 +87,14 @@
     },
     "pino": {
       "optional": true
+    },
+    "@vercel/functions": {
+      "optional": true
     }
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
+    "@vercel/functions": "^2.0.0",
     "pino": "^9.5.0",
     "tsup": "^8.3.0",
     "tsx": "^4.19.0",
