@@ -213,17 +213,69 @@ import { Analytics } from "bq-analytics";
 import { reactNativeTransport, attachExpoErrorHandler, attachAppStateFlush } from "bq-analytics/react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { AppState, Platform } from "react-native";
+import Constants from "expo-constants";
+import * as Updates from "expo-updates";
+
+// Mutable headers ref — the RN transport spreads `config.headers` on every
+// fetch, so mutating this object propagates new auth without rebuilding
+// the Analytics instance (and losing the retry queue).
+const headersRef: Record<string, string> = {};
+
+// Mutable identity ref — the attach helpers below take getter closures
+// that re-resolve userId on every event, so it tracks the *current*
+// identity instead of whatever was set when the helpers were attached
+// (typically null, before SecureStore loads).
+let currentDeviceId: string | undefined;
 
 const a = new Analytics({
   transport: reactNativeTransport({
     url: `${API_URL}/api/track`,
-    headers: { authorization: `Bearer ${deviceToken}` },
+    headers: headersRef,
     storage: AsyncStorage,
   }),
 });
-attachExpoErrorHandler(a, ErrorUtils, { platform: Platform.OS });
-attachAppStateFlush(a, AppState, { userId });
+
+// Attach once at module load with getter closures.
+attachExpoErrorHandler(a, ErrorUtils, () => ({
+  platform: Platform.OS,
+  userId: currentDeviceId,
+}));
+attachAppStateFlush(a, AppState, () => ({ userId: currentDeviceId }));
+
+// Call this when identity loads / rotates.
+export function bindIdentity(identity: { deviceId: string; deviceToken: string } | null) {
+  if (identity) {
+    headersRef.authorization = `Bearer ${identity.deviceToken}`;
+    currentDeviceId = identity.deviceId;
+    a.identify(identity.deviceId, {
+      platform: Platform.OS,
+      app_version: Constants.expoConfig?.version ?? null,
+      build_number:
+        Constants.expoConfig?.ios?.buildNumber ??
+        String(Constants.expoConfig?.android?.versionCode ?? "") || null,
+      ota_update_id: Updates.updateId,            // null = on embedded JS
+      ota_channel: Updates.channel,               // "production" | "preview" | "development"
+      runtime_version: Updates.runtimeVersion,
+    });
+  } else {
+    delete headersRef.authorization;
+    currentDeviceId = undefined;
+  }
+}
 ```
+
+**Why getter closures, not static objects.** RN identity typically loads
+asynchronously (SecureStore → state → render). If you attach the helpers with
+a static `{ userId }` while identity is still null, every subsequent
+`app.state_changed` and uncaught-error event lands with `user_id: NULL`. The
+getter form re-resolves on each event.
+
+**Why the OTA / build traits.** When triaging "but I just OTA'd!" the only
+honest answer is `ota_update_id` — everything else relies on the user
+accurately reporting their bundle. `events.users` is last-write-wins per
+deviceId, so the next OTA's `identify()` call updates the row in place;
+`events.users` always reflects each device's current build. Don't stamp
+these on every event — that bloats `events.raw` with no query benefit.
 
 ### Node CLI
 

@@ -227,11 +227,58 @@ const a = new Analytics({
     storage: AsyncStorage,
   }),
 });
-attachExpoErrorHandler(a, ErrorUtils, { platform: Platform.OS });
-attachAppStateFlush(a, AppState, { userId });
 
-a.track("import.started", { source: "instagram" }, { userId });
+// Pass `attrs` as a getter when userId loads asynchronously (typical when
+// identity comes from SecureStore / AsyncStorage). The closure resolves on
+// every event, so userId reflects the current identity instead of whatever
+// was set when the helpers were attached.
+let currentUserId: string | undefined;
+attachExpoErrorHandler(a, ErrorUtils, () => ({ platform: Platform.OS, userId: currentUserId }));
+attachAppStateFlush(a, AppState, () => ({ userId: currentUserId }));
+
+// later, when identity loads:
+currentUserId = identity.deviceId;
+
+a.track("import.started", { source: "instagram" }, { userId: currentUserId });
 ```
+
+#### Recommended `identify()` traits for Expo apps
+
+When you call `analytics.identify(deviceId, traits)`, include enough device
+context that you can answer "which build was this user on?" without asking
+them. The trait names below are a convention — bq-analytics doesn't enforce
+them, but consistent names make BQ queries portable across consumers.
+
+```ts
+import Constants from "expo-constants";
+import * as Updates from "expo-updates";
+import { Platform } from "react-native";
+
+a.identify(deviceId, {
+  platform: Platform.OS,                                    // "ios" | "android"
+  app_version: Constants.expoConfig?.version ?? null,       // "1.4.2"
+  build_number:                                             // TestFlight build
+    Constants.expoConfig?.ios?.buildNumber ??
+    String(Constants.expoConfig?.android?.versionCode ?? "") || null,
+  ota_update_id: Updates.updateId,                          // null when on embedded JS
+  ota_channel: Updates.channel,                             // "production" | "preview" | "development"
+  runtime_version: Updates.runtimeVersion,                  // matches the native build
+});
+```
+
+Why these specifically:
+
+- **`ota_update_id`** is the only honest answer to "but I OTA'd!" — anything
+  else relies on the user accurately reporting their bundle.
+- **`build_number`** disambiguates TestFlight builds within the same
+  marketing version.
+- **`ota_channel`** lets you split queries by production / preview /
+  development without joining anything else.
+
+`identify` writes to `events.users` with last-write-wins semantics, so the
+next OTA's `identify` call updates the row in place — `events.users` always
+reflects each device's current build. Don't stamp these on every event row;
+that bloats `events.raw` for no query benefit.
 
 ### Non-Node (Python, Go, Ruby)
 
