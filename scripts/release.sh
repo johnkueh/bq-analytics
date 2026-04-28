@@ -54,10 +54,14 @@ echo "  -> $NEW_VERSION"
 echo "→ commit + tag"
 git add package.json
 git commit -m "release: v${NEW_VERSION}"
-git tag "v${NEW_VERSION}"
+# Annotated tag — required for `git push --follow-tags`. Lightweight tags
+# wouldn't be pushed and the CI workflow wouldn't fire.
+git tag -a "v${NEW_VERSION}" -m "release v${NEW_VERSION}"
 
 echo "→ push (triggers CI publish)"
 git push --follow-tags
+# Belt-and-suspenders: explicitly push the tag in case --follow-tags missed it.
+git push origin "v${NEW_VERSION}" 2>/dev/null || true
 
 echo
 echo "Tagged v${NEW_VERSION} and pushed."
