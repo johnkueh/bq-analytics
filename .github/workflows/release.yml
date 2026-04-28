@@ -19,19 +19,16 @@ jobs:
         with:
           version: 10
 
+      # Node 24 LTS ships with npm 11.x natively. Trusted publishing
+      # (OIDC token exchange on `npm publish`) requires npm >= 11.5.1.
+      # Node 22 ships with npm 10.x, which:
+      # 1) silently sends an unauth'd PUT and gets a misleading 404, and
+      # 2) chokes on `npm install -g npm@latest` self-upgrades with
+      #    "Cannot find module 'promise-retry'" on GHA prebuilt images.
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
           registry-url: https://registry.npmjs.org
-
-      # Trusted publishing requires npm >= 11.5.1 (OIDC token exchange on
-      # `npm publish`). Node 22 LTS ships with npm 10.x, which silently
-      # sends an unauth'd PUT and gets a misleading 404 from the registry.
-      # Pin to an npm 11.x build that supports OIDC; `npm@latest` triggers
-      # a self-upgrade bug ("Cannot find module 'promise-retry'") on
-      # GitHub-hosted runners shipping npm 10.x.
-      - name: Upgrade npm to 11.x
-        run: npm install -g npm@11
 
       - name: Install
         run: pnpm install --frozen-lockfile
