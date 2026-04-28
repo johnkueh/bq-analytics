@@ -49,12 +49,20 @@ async function fetchToken(scope: string): Promise<CachedToken> {
 
 async function readVercelOidcToken(): Promise<string | null> {
   // Older runtimes / explicit override
-  if (process.env.VERCEL_OIDC_TOKEN) return process.env.VERCEL_OIDC_TOKEN;
+  if (typeof process !== "undefined" && process.env?.VERCEL_OIDC_TOKEN) {
+    return process.env.VERCEL_OIDC_TOKEN;
+  }
   // Modern Vercel runtime — token lives in async-local request context,
   // surfaced by @vercel/functions/oidc. Optional dep — if not installed
   // we just return null and the caller falls through to other auth paths.
+  //
+  // String-variable form so RN/browser bundlers don't try to resolve
+  // @vercel/functions/oidc at build time. That package imports node:path
+  // / node:fs / etc., so static resolution makes Metro choke even when
+  // the RN consumer never reaches this code path at runtime.
   try {
-    const mod = (await import("@vercel/functions/oidc")) as {
+    const oidcModuleId = "@vercel/functions" + "/oidc";
+    const mod = (await import(oidcModuleId)) as {
       getVercelOidcToken?: () => Promise<string | null | undefined>;
     };
     if (typeof mod.getVercelOidcToken === "function") {
@@ -62,7 +70,7 @@ async function readVercelOidcToken(): Promise<string | null> {
       return tok || null;
     }
   } catch {
-    // not installed in this project
+    // not installed in this project, or unresolvable in this bundler
   }
   return null;
 }
