@@ -29,7 +29,7 @@ A project may be a mix (e.g. Next.js + Expo monorepo) — install both paths.
 
 1. **Confirm GCP project.** Run `gcloud projects list --format='value(projectId)'`. **Verify billing is enabled** with `gcloud billing projects describe <id>` — the BQ sandbox / free tier disallows streaming inserts and the SDK will 403.
 2. **For Vercel-hosted stacks**: `vercel whoami` and `vercel ls`. Get a team-scope token from https://vercel.com/account/tokens for setup only — never commit.
-3. **Install the package**: `pnpm add github:johnkueh/bq-analytics` (the package isn't on npm yet — install directly from GitHub. The repo's `prepare` script builds `dist/` automatically as part of install).
+3. **Install the package**: `pnpm add bq-analytics` (published on npm — works on Vercel CI, no extra setup).
 
 ## Provision GCP resources
 

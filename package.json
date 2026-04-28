@@ -54,7 +54,7 @@
   ],
   "scripts": {
     "build": "tsup",
-    "prepare": "tsup",
+    "prepublishOnly": "pnpm build && pnpm test",
     "dev": "tsup --watch",
     "test": "vitest run",
     "test:watch": "vitest",
@@ -64,7 +64,8 @@
     "smoke:query": "tsx examples/cli-smoke/query.ts",
     "smoke:cli-error": "tsx examples/cli-smoke/cli-error.ts",
     "smoke:pino": "tsx examples/cli-smoke/pino-test.ts",
-    "sync-skills": "./scripts/sync-skills.sh"
+    "sync-skills": "./scripts/sync-skills.sh",
+    "release": "./scripts/release.sh"
   },
   "dependencies": {},
   "peerDependencies": {

@@ -52,7 +52,7 @@ Claude detects the runtime (Next.js / Express / Hono / Expo / CLI), runs the set
 If you'd rather do it manually:
 
 ```sh
-pnpm add github:johnkueh/bq-analytics    # not on npm yet — installs from GitHub, builds on install
+pnpm add bq-analytics
 
 # One-shot per project: BQ datasets + tables, Vercel OIDC, IAM bindings, log drain
 TEAM_SLUG=acme PROJECT_NAME=my-app PROJECT_DOMAIN=www.example.com \
