@@ -1,4 +1,4 @@
-import { createFlagsRoute } from "bq-analytics/next";
+import { createFlagsRoute } from "bq-analytics/next/flags";
 import { flagSource } from "@/lib/flags";
 
 /**

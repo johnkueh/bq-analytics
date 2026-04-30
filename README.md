@@ -388,7 +388,9 @@ Browser / RN / Expo clients should fetch via your own `/api/flags` route — nev
 
 ```ts
 // src/app/api/flags/route.ts
-import { createFlagsRoute } from "bq-analytics/next";
+// Use the dedicated subpath — pulls @vercel/edge-config only on this route,
+// keeping the base `bq-analytics/next` import edge-config-free for /api/track etc.
+import { createFlagsRoute } from "bq-analytics/next/flags";
 export const GET = createFlagsRoute({
   resolveUser: async (req) => /* your auth */ null,
   filter: (flags) => Object.fromEntries(           // strip allowlists

@@ -42,6 +42,10 @@
       "types": "./dist/handlers/next.d.ts",
       "import": "./dist/handlers/next.js"
     },
+    "./next/flags": {
+      "types": "./dist/handlers/next-flags.d.ts",
+      "import": "./dist/handlers/next-flags.js"
+    },
     "./hono": {
       "types": "./dist/handlers/hono.d.ts",
       "import": "./dist/handlers/hono.js"

@@ -636,7 +636,9 @@ if (flags().isOn("new-checkout", userId)) { /* new flow */ }
 
 ```ts
 // src/app/api/flags/route.ts
-import { createFlagsRoute } from "bq-analytics/next";
+// Subpath import — `bq-analytics/next/flags` is the only entry that pulls
+// `@vercel/edge-config` (an optional peer). Keeps /api/track etc. lean.
+import { createFlagsRoute } from "bq-analytics/next/flags";
 export const GET = createFlagsRoute({
   resolveUser: async (req) => /* same auth as /api/track */ null,
   filter: (flags) => Object.fromEntries(           // strip allowlists

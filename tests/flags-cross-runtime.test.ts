@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { Flags, httpSource } from "../src/index.js";
-import { createFlagsRoute } from "../src/handlers/next.js";
+import { createFlagsRoute } from "../src/handlers/next-flags.js";
 import type { FlagMap, FlagSource } from "../src/index.js";
 
 function memorySource(initial: FlagMap): FlagSource & { setFlags: (m: FlagMap) => void } {

@@ -104,7 +104,9 @@ Drop a `/api/flags` route on the server first (one line):
 
 ```ts
 // src/app/api/flags/route.ts (Next.js App Router)
-import { createFlagsRoute } from "bq-analytics/next";
+// Subpath import — only this entry resolves `@vercel/edge-config`,
+// so the base `bq-analytics/next` bundle stays edge-config-free.
+import { createFlagsRoute } from "bq-analytics/next/flags";
 export const GET = createFlagsRoute({
   resolveUser: async (req) => /* same auth as /api/track */ null,
   filter: (flags) => Object.fromEntries(            // strip allowlists
@@ -239,7 +241,7 @@ to clients. The route is one line:
 
 ```ts
 // src/app/api/flags/route.ts
-export { createFlagsRoute as GET } from "bq-analytics/next";
+export { createFlagsRoute as GET } from "bq-analytics/next/flags";
 ```
 
 Pass `resolveUser` to authenticate, or `filter` to strip `users[]`
