@@ -1,14 +1,15 @@
 ---
 name: bq-analytics-install
-description: Install AND instrument bq-analytics in a project. Phase 1 detects the runtime and wires the SDK. Phase 2 scans the repo for auth / payment / key feature surfaces, suggests events, and instruments track/identify/group inline. Use when the user wants to add analytics to a new or existing project.
+description: Install AND instrument bq-analytics in a project. Phase 1 detects the runtime and wires the SDK. Phase 2 scans the repo for auth / payment / key feature surfaces, suggests events, and instruments track/identify/group inline. Phase 3 (optional) provisions feature flags via Vercel Edge Config. Use when the user wants to add analytics to a new or existing project.
 ---
 
 # Adding bq-analytics to a project
 
-This skill has two phases. **Both are required.** Phase 1 puts the pipes in place; Phase 2 makes the data useful by instrumenting the right code paths.
+This skill has three phases. **Phases 1 and 2 are required**; Phase 3 is optional but cheap.
 
 - Phase 1: Provision + wire the SDK (steps 0–6 below)
 - Phase 2: Instrument auth / payment / key events (the "Phase 2 — Instrumentation" section)
+- Phase 3: Feature flags via Vercel Edge Config (the "Phase 3 — Feature flags" section). Skip unless asked, or if the project shows signs of needing flags (PostHog/LD/GrowthBook in deps, hand-rolled `if (FEATURE_*)` gating). Day-to-day flag operations live in `claude-skills/flags/SKILL.md`.
 
 ## Step 0 — Detect the runtime
 
@@ -364,7 +365,7 @@ If anything matches:
 3. **Replace inline** — keep the same event names + property shapes so historical analysis carries over.
 4. **Remove the old SDK** from `package.json` once all call sites are migrated. Don't dual-write — it's a cost trap and event names will drift.
 
-If migration is partial (user wants to keep PostHog for replays/flags but BQ for analytics), say so explicitly to the user and dual-write only the events they care about.
+If migration is partial (user wants to keep PostHog for replays but BQ for analytics + flags), say so explicitly to the user and dual-write only the events they care about. For feature flags specifically, bq-analytics ships its own minimal flag system backed by Vercel Edge Config — see Phase 3 below for an opt-in setup, and `claude-skills/flags/SKILL.md` for ongoing operations.
 
 ### 2-pre-B. Detect and migrate manually-built telemetry endpoints
 
@@ -549,6 +550,97 @@ Before the user redeploys:
 1. Print the list of events you instrumented (file:line each).
 2. Print 2–3 example `bq query` SQL strings the user can run after their first real session to verify each surface fired correctly.
 3. Suggest a follow-up: "after a day of real traffic, run `/bq-analytics-query show me event volume last 24h` to see what's flowing."
+
+## Phase 3 — Feature flags (optional)
+
+Skip unless the user asks for flags, is migrating off PostHog/LaunchDarkly/GrowthBook, or has signals like `if (FEATURE_FOO)`, `process.env.NEXT_PUBLIC_FLAG_*`, or hand-rolled gating in code.
+
+Flags share the analytics identity (`userId`) and emit `$flag_called` exposures into the same `events.raw` table — so impact analysis is just BigQuery.
+
+### Step 1 — Provision the Edge Config store
+
+```sh
+./node_modules/bq-analytics/scripts/setup-edge-config.sh
+```
+
+What it does (idempotent):
+1. `vercel link` if not already
+2. Creates an Edge Config (`bq-analytics-flags`) or reuses one
+3. Initializes the `flags` key as `{}`
+4. Mints a read token, sets `EDGE_CONFIG` on Vercel Production
+5. `vercel env pull .env.local --environment production`
+
+Preview / development environments aren't auto-populated (Vercel CLI's `git_branch_required` quirk on preview). Add via dashboard or REST helper if needed.
+
+### Step 2 — Wire the SDK
+
+**Server (Next.js / Hono / Node):**
+
+```ts
+// src/lib/flags.ts
+import { Flags } from "bq-analytics";
+import { edgeConfigSource } from "bq-analytics/edge-config";
+import { analytics } from "./analytics";
+
+declare global { var __bqf: Flags | undefined; }
+export function flags() {
+  return globalThis.__bqf ??= new Flags({
+    source: edgeConfigSource(),
+    analytics: analytics(),
+    refreshIntervalMs: 60_000,
+  });
+}
+
+// in any route handler
+await flags().ready();
+if (flags().isOn("new-checkout", userId)) { /* new flow */ }
+```
+
+**Browser / RN — never expose the Edge Config token:**
+
+```ts
+// src/app/api/flags/route.ts
+import { createFlagsRoute } from "bq-analytics/next";
+export const GET = createFlagsRoute({
+  resolveUser: async (req) => /* same auth as /api/track */ null,
+  filter: (flags) => Object.fromEntries(           // strip allowlists
+    Object.entries(flags).map(([k, v]) => [k, { ...v, users: undefined }]),
+  ),
+});
+
+// browser / RN client
+import { Flags, httpSource } from "bq-analytics";
+const f = new Flags({ source: httpSource({ url: "/api/flags" }) });
+await f.ready();
+f.isOn("new-checkout", userId);
+```
+
+### Step 3 — Operate with `bq-flags` CLI
+
+```sh
+pnpm exec bq-flags on  new-checkout --rollout 25%
+pnpm exec bq-flags allow ai-suggestions u_alice u_bob
+pnpm exec bq-flags rollout new-checkout 100%
+pnpm exec bq-flags off kill-old-flow
+pnpm exec bq-flags eval new-checkout --outcome subscription.started
+```
+
+Hand the user the `claude-skills/flags/SKILL.md` for full ops including cohort materialization from BigQuery.
+
+### Step 4 — Verify
+
+```sh
+pnpm exec bq-flags on smoke-test --rollout 100%
+pnpm exec bq-flags list                              # should show smoke-test
+pnpm exec bq-flags delete smoke-test
+```
+
+Then in code, gate something on a flag, deploy, and confirm `$flag_called` events appear in `events.raw`:
+
+```sh
+bq query --nouse_legacy_sql --format=pretty \
+  "SELECT * FROM \`<gcp>.events.raw\` WHERE event_name='\$flag_called' ORDER BY ts DESC LIMIT 5"
+```
 
 ## Verify end-to-end
 

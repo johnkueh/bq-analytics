@@ -25,3 +25,5 @@ pnpm-debug.log*
 # Smoke test scratch
 .smoke-output.json
 *.tgz
+.vercel
+.env*.local

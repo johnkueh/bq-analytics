@@ -18,3 +18,11 @@ export type {
 } from "./types.js";
 
 export { Analytics, httpTransport, type HttpTransportConfig } from "./core.js";
+export {
+  Flags,
+  type Flag,
+  type FlagMap,
+  type FlagsConfig,
+  type FlagSource,
+} from "./flags.js";
+export { httpSource, type HttpSourceConfig } from "./flag-sources/http.js";

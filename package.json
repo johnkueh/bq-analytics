@@ -50,6 +50,10 @@
       "types": "./dist/transports/pino.d.ts",
       "import": "./dist/transports/pino.js"
     },
+    "./edge-config": {
+      "types": "./dist/flag-sources/edge-config.d.ts",
+      "import": "./dist/flag-sources/edge-config.js"
+    },
     "./cli": {
       "types": "./dist/cli/attach.d.ts",
       "import": "./dist/cli/attach.js"
@@ -62,6 +66,9 @@
       "types": "./dist/insert.d.ts",
       "import": "./dist/insert.js"
     }
+  },
+  "bin": {
+    "bq-flags": "./scripts/bq-flags"
   },
   "files": [
     "dist",
@@ -82,6 +89,8 @@
     "smoke:query": "tsx examples/cli-smoke/query.ts",
     "smoke:cli-error": "tsx examples/cli-smoke/cli-error.ts",
     "smoke:pino": "tsx examples/cli-smoke/pino-test.ts",
+    "smoke:flags": "tsx examples/cli-smoke/edge-config-smoke.ts",
+    "smoke:flags-targeting": "tsx examples/cli-smoke/edge-config-targeting-smoke.ts",
     "sync-skills": "./scripts/sync-skills.sh",
     "release": "./scripts/release.sh"
   },
@@ -89,7 +98,8 @@
   "peerDependencies": {
     "next": ">=14",
     "pino": ">=8",
-    "@vercel/functions": ">=2"
+    "@vercel/functions": ">=2",
+    "@vercel/edge-config": ">=1"
   },
   "peerDependenciesMeta": {
     "next": {
@@ -100,10 +110,14 @@
     },
     "@vercel/functions": {
       "optional": true
+    },
+    "@vercel/edge-config": {
+      "optional": true
     }
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
+    "@vercel/edge-config": "^1.4.0",
     "@vercel/functions": "^2.0.0",
     "pino": "^9.5.0",
     "tsup": "^8.3.0",

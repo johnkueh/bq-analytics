@@ -1,0 +1,262 @@
+#!/usr/bin/env bash
+#
+# bq-flags — feature flag CLI for bq-analytics.
+#
+# Backed by Vercel Edge Config. Reads EDGE_CONFIG from .env.local
+# (run scripts/setup-edge-config.sh once to provision).
+#
+# Usage:
+#   bq-flags list                            list all flags
+#   bq-flags get   <key>                     show one flag's JSON
+#   bq-flags on    <key> [--rollout PCT] [--users U1,U2]
+#   bq-flags off   <key>
+#   bq-flags rollout   <key> <pct>           0..1 (or 0..100, with optional %)
+#   bq-flags allow     <key> <user>...       add to allowlist
+#   bq-flags disallow  <key> <user>...       remove from allowlist
+#   bq-flags delete    <key>
+#   bq-flags raw                             dump full flags object
+#   bq-flags eval      <key> [--outcome EVENT] [--days N] [--project ID] [--dataset NAME]
+#                                            BQ queries: coverage + lift
+#
+
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# ─── env ─────────────────────────────────────────────────────────────────
+if [ -f "$REPO_ROOT/.env.local" ]; then
+  set -a
+  # shellcheck disable=SC1091
+  . "$REPO_ROOT/.env.local"
+  set +a
+fi
+
+require() {
+  command -v "$1" >/dev/null 2>&1 || { echo "missing: $1" >&2; exit 1; }
+}
+require vercel
+require jq
+
+if [ -z "${EDGE_CONFIG:-}" ]; then
+  echo "EDGE_CONFIG is not set. Run scripts/setup-edge-config.sh first." >&2
+  exit 1
+fi
+
+EC_ID="$(printf '%s' "$EDGE_CONFIG" | sed -nE 's|.*/(ecfg_[^?]+)\?.*|\1|p')"
+if [ -z "$EC_ID" ]; then
+  echo "couldn't extract Edge Config id from EDGE_CONFIG" >&2
+  exit 1
+fi
+KEY="${EDGE_CONFIG_KEY:-flags}"
+
+# ─── core read/write ─────────────────────────────────────────────────────
+read_flags() {
+  vercel edge-config items "$EC_ID" --format json 2>/dev/null \
+    | jq --arg k "$KEY" '[ .[] | select(.key == $k) ] | (.[0].value // {})'
+}
+
+# Apply a jq mutation. The expression sees the current flags object as
+# input and must output the next flags object. Extra `--argjson` / `--arg`
+# pairs can be passed after the expression.
+mutate() {
+  local mutation="$1"; shift
+  local current next
+  current="$(read_flags)"
+  next="$(printf '%s' "$current" | jq -c "$@" "$mutation")"
+  vercel edge-config update "$EC_ID" \
+    --patch "$(jq -nc --arg k "$KEY" --argjson v "$next" \
+      '{items:[{operation:"upsert",key:$k,value:$v}]}')" >/dev/null 2>&1
+}
+
+# ─── helpers ─────────────────────────────────────────────────────────────
+# Accepts 0.5, 50%, 50, 1, 100% — all map to 0..1.
+parse_pct() {
+  local raw="$1"
+  if [[ "$raw" == *% ]]; then
+    raw="${raw%\%}"
+    awk -v n="$raw" 'BEGIN { printf "%g", n/100 }'
+  elif awk -v n="$raw" 'BEGIN { exit !(n > 1) }'; then
+    awk -v n="$raw" 'BEGIN { printf "%g", n/100 }'
+  else
+    printf '%s' "$raw"
+  fi
+}
+
+usage() {
+  sed -n '/^# Usage:/,/^#$/p' "$0" | sed -E 's/^# ?//' >&2
+  exit 1
+}
+
+# ─── subcommands ─────────────────────────────────────────────────────────
+cmd="${1:-}"; shift || true
+case "$cmd" in
+  list)
+    read_flags | jq -r '
+      to_entries
+      | if length == 0 then "(no flags)"
+        else (
+          ["KEY","ON","ROLLOUT","ALLOWLIST"],
+          (.[] | [
+            .key,
+            (.value.on | tostring),
+            ((.value.rollout // "—") | tostring),
+            ((.value.users // []) | length | tostring)
+          ])
+        ) | @tsv end
+    ' | column -t -s "$(printf '\t')"
+    ;;
+
+  get)
+    [ $# -ge 1 ] || usage
+    read_flags | jq --arg k "$1" '.[$k] // null'
+    ;;
+
+  raw)
+    read_flags
+    ;;
+
+  on)
+    [ $# -ge 1 ] || usage
+    key="$1"; shift
+    rollout=""
+    users=""
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --rollout) rollout="$(parse_pct "$2")"; shift 2 ;;
+        --users)   users="$2"; shift 2 ;;
+        *) echo "unknown flag: $1" >&2; exit 1 ;;
+      esac
+    done
+    users_json="[]"
+    if [ -n "$users" ]; then
+      users_json="$(printf '%s' "$users" | jq -Rc 'split(",") | map(gsub("^\\s+|\\s+$"; "")) | map(select(length > 0))')"
+    fi
+    mutate '
+      .[$k] = ((.[$k] // {}) | .on = true
+        | if $rollout != "" then .rollout = ($rollout | tonumber) else . end
+        | if ($u | length) > 0 then .users = $u else . end)
+    ' --arg k "$key" --arg rollout "$rollout" --argjson u "$users_json"
+    echo "ok"
+    ;;
+
+  off)
+    [ $# -ge 1 ] || usage
+    mutate '.[$k] = ((.[$k] // {}) | .on = false)' --arg k "$1"
+    echo "ok"
+    ;;
+
+  rollout)
+    [ $# -ge 2 ] || usage
+    pct="$(parse_pct "$2")"
+    mutate '.[$k] = ((.[$k] // {on:true}) | .rollout = ($r | tonumber))' \
+      --arg k "$1" --arg r "$pct"
+    echo "ok"
+    ;;
+
+  allow)
+    [ $# -ge 2 ] || usage
+    key="$1"; shift
+    users_json="$(printf '%s\n' "$@" | jq -Rsc 'split("\n") | map(select(length > 0))')"
+    mutate '
+      .[$k] = ((.[$k] // {on:true,rollout:0})
+        | .users = (((.users // []) + $u) | unique))
+    ' --arg k "$key" --argjson u "$users_json"
+    echo "ok"
+    ;;
+
+  disallow)
+    [ $# -ge 2 ] || usage
+    key="$1"; shift
+    users_json="$(printf '%s\n' "$@" | jq -Rsc 'split("\n") | map(select(length > 0))')"
+    mutate '
+      .[$k] = ((.[$k] // {})
+        | .users = ((.users // []) - $u))
+    ' --arg k "$key" --argjson u "$users_json"
+    echo "ok"
+    ;;
+
+  delete)
+    [ $# -ge 1 ] || usage
+    mutate 'del(.[$k])' --arg k "$1"
+    echo "ok"
+    ;;
+
+  eval)
+    [ $# -ge 1 ] || usage
+    key="$1"; shift
+    outcome=""
+    days="14"
+    project="${GCP_PROJECT_ID:-}"
+    dataset="${BQ_EVENTS_DATASET:-events}"
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --outcome) outcome="$2"; shift 2 ;;
+        --days)    days="$2"; shift 2 ;;
+        --project) project="$2"; shift 2 ;;
+        --dataset) dataset="$2"; shift 2 ;;
+        *) echo "unknown flag: $1" >&2; exit 1 ;;
+      esac
+    done
+    if [ -z "$project" ]; then
+      echo "GCP_PROJECT_ID not set; pass --project ID" >&2
+      exit 1
+    fi
+    require bq
+
+    echo "→ coverage for '$key' (last ${days}d)"
+    bq query --nouse_legacy_sql --format=pretty --quiet "$(cat <<SQL
+SELECT
+  JSON_VALUE(properties, '\$.on') AS variant,
+  COUNT(DISTINCT user_id) AS users,
+  COUNT(*) AS exposures
+FROM \`${project}.${dataset}.raw\`
+WHERE event_name = '\$flag_called'
+  AND JSON_VALUE(properties, '\$.key') = '${key}'
+  AND DATE(ts) >= CURRENT_DATE() - ${days}
+GROUP BY variant ORDER BY variant DESC
+SQL
+)"
+
+    if [ -n "$outcome" ]; then
+      echo
+      echo "→ lift: '$outcome' conversion by variant"
+      bq query --nouse_legacy_sql --format=pretty --quiet "$(cat <<SQL
+WITH first_exposure AS (
+  SELECT
+    user_id,
+    JSON_VALUE(properties, '\$.on') = 'true' AS variant_on,
+    MIN(ts) AS exposed_at
+  FROM \`${project}.${dataset}.raw\`
+  WHERE event_name = '\$flag_called'
+    AND JSON_VALUE(properties, '\$.key') = '${key}'
+    AND DATE(ts) >= CURRENT_DATE() - ${days}
+  GROUP BY user_id, variant_on
+),
+converted AS (
+  SELECT user_id, MIN(ts) AS converted_at
+  FROM \`${project}.${dataset}.raw\`
+  WHERE event_name = '${outcome}'
+    AND DATE(ts) >= CURRENT_DATE() - ${days}
+  GROUP BY user_id
+)
+SELECT
+  variant_on,
+  COUNT(*) AS users,
+  COUNTIF(c.converted_at >= e.exposed_at) AS conversions,
+  ROUND(SAFE_DIVIDE(COUNTIF(c.converted_at >= e.exposed_at), COUNT(*)) * 100, 2) AS rate_pct
+FROM first_exposure e LEFT JOIN converted c USING (user_id)
+GROUP BY variant_on ORDER BY variant_on DESC
+SQL
+)"
+    fi
+    ;;
+
+  help|"-h"|"--help"|"")
+    usage
+    ;;
+
+  *)
+    echo "unknown command: $cmd" >&2
+    usage
+    ;;
+esac

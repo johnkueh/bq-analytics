@@ -17,9 +17,10 @@ Tiny analytics SDK that sends events directly to BigQuery. PostHog/Segment-shape
 | Mobile (Expo / RN) | yes | yes |
 | CLI access for ad-hoc queries | weak (HogQL via REST) | excellent (`bq query`) |
 | Data lives in | PostHog's ClickHouse | your GCP project |
+| Feature flags | yes (rich UI) | yes (config-as-data, CLI, no UI) |
 | Ops | none | one shell script per project |
 
-If you want PostHog's UI, replays, and feature flags, use PostHog. If you mostly want event analytics that an AI agent can query, this is cheaper and your data stays yours.
+If you want PostHog's UI and replays, use PostHog. If you mostly want event analytics + flags that an AI agent can query and operate, this is cheaper and your data stays yours.
 
 ## Coverage matrix
 
@@ -47,7 +48,7 @@ The fastest path is via the Claude Code marketplace — Claude drives the instal
 /bq-analytics-install
 ```
 
-Claude detects the runtime (Next.js / Express / Hono / Expo / CLI), runs the setup script, wires the route handlers, patches your auth middleware if needed, and tells you what to verify after deploy.
+Claude detects the runtime (Next.js / Express / Hono / Expo / CLI), runs the setup script, wires the route handlers, patches your auth middleware if needed, and tells you what to verify after deploy. Feature flags are an opt-in Phase 3 of the same install skill — `/bq-analytics-install` will offer to provision Edge Config + the `bq-flags` CLI if you want them.
 
 If you'd rather do it manually:
 
@@ -284,6 +285,90 @@ that bloats `events.raw` for no query benefit.
 
 There's no native SDK. POST events directly to your `/api/track` route from any HTTP client. The schema is `{ records: [{ kind: "event", row: {...} }, ...] }` — see `src/types.ts` for the row shapes.
 
+## Feature flags
+
+Optional. Backed by Vercel Edge Config; sub-second propagation; ~free at indie scale; exposures auto-track to `events.raw` so impact analysis is just BigQuery.
+
+```ts
+// src/lib/flags.ts
+import { Flags } from "bq-analytics";
+import { edgeConfigSource } from "bq-analytics/edge-config";
+import { analytics } from "./analytics";
+
+export const flags = new Flags({
+  source: edgeConfigSource(),
+  analytics: analytics(),         // → emits "$flag_called" exposures
+  refreshIntervalMs: 60_000,      // pull updates every 60s
+});
+
+// in any server code (Next.js, Hono, raw Node, CLI)
+await flags.ready();
+if (flags.isOn("new-checkout", userId)) { /* new flow */ }
+```
+
+Browser / RN / Expo clients should fetch via your own `/api/flags` route — never expose the Edge Config token to clients:
+
+```ts
+// src/app/api/flags/route.ts
+import { createFlagsRoute } from "bq-analytics/next";
+export const GET = createFlagsRoute({
+  resolveUser: async (req) => /* your auth */ null,
+  filter: (flags) => Object.fromEntries(           // strip allowlists
+    Object.entries(flags).map(([k, v]) => [k, { ...v, users: undefined }]),
+  ),
+});
+
+// browser / RN
+import { Flags, httpSource } from "bq-analytics";
+const flags = new Flags({ source: httpSource({ url: "/api/flags" }) });
+await flags.ready();
+flags.isOn("new-checkout", userId);
+```
+
+### Setup (one-time per repo)
+
+```sh
+./scripts/setup-edge-config.sh
+```
+
+Provisions an Edge Config store, mints a read token, sets `EDGE_CONFIG` on Vercel Production, pulls into `.env.local`. Idempotent.
+
+### Operating flags — `bq-flags` CLI
+
+```sh
+bq-flags list                                 # current state
+bq-flags on  new-checkout --rollout 25%       # create / turn on at 25%
+bq-flags rollout new-checkout 100%            # ramp
+bq-flags allow ai-suggestions u_alice u_bob   # allowlist
+bq-flags off new-checkout                     # kill switch
+bq-flags eval new-checkout --outcome subscription.started
+```
+
+`eval` runs the standard exposure / lift queries against `events.raw`. See `claude-skills/flags/SKILL.md` for the full operations guide and the cohort-materialisation flow (BQ query → user_id list → allowlist).
+
+### Flag config shape
+
+Stored as one JSON object under the `flags` key in Edge Config:
+
+```json
+{
+  "new-checkout":   { "on": true, "rollout": 0.5 },
+  "ai-suggestions": { "on": true, "users": ["u_john", "u_beta1"] },
+  "kill-old-flow":  { "on": false }
+}
+```
+
+`rollout` is `0..1` (deterministic FNV-1a hash on `userId+key`). `users` is an allowlist that bypasses the rollout. Combine for "force-on for testers + N% rollout for everyone else."
+
+### Per runtime
+
+| Runtime | Flag source | Notes |
+|---|---|---|
+| Next.js / Hono / raw Node / CLI on Vercel | `edgeConfigSource()` | Direct Edge Config read, 8–15ms warm |
+| Node CLI off-Vercel | `edgeConfigSource({ connectionString: ... })` | Pass token explicitly |
+| Browser (Next.js client) | `httpSource({ url: "/api/flags" })` | Through your `/api/flags` route |
+| React Native / Expo | `httpSource({ url: \`\${API_URL}/api/flags\` })` | Same — never expose Edge Config token |
+
 ## Architecture
 
 ```
@@ -442,14 +527,18 @@ GCP_PROJECT_ID=my-project pnpm smoke
 
 # verify they landed
 pnpm smoke:query <run_id>
+
+# flag smokes (against a real Edge Config — run setup-edge-config.sh first)
+pnpm smoke:flags             # read latency + propagation + missing-key
+pnpm smoke:flags-targeting   # allowlist / rollout / cohort / exposure / refresh
 ```
 
-The smoke script writes to `bq_analytics_smoke_events` and `bq_analytics_smoke_logs` datasets you can drop afterwards (`scripts/teardown.sh`).
+The events smoke writes to `bq_analytics_smoke_events` and `bq_analytics_smoke_logs` datasets you can drop afterwards (`scripts/teardown.sh`). The flag smokes write transient keys into your Edge Config and clean up after themselves.
 
 ## Tests
 
 ```sh
-pnpm test                  # 35 unit tests, no network
+pnpm test                  # 92 unit tests, no network
 pnpm test:integration      # real BQ — requires BQ_INTEGRATION=1 and ADC
 ```
 
@@ -457,9 +546,14 @@ pnpm test:integration      # real BQ — requires BQ_INTEGRATION=1 and ADC
 
 ```sh
 GCP_PROJECT_ID=my-project ./scripts/teardown.sh
+
+# if you set up flags
+EC_ID=$(grep '^EDGE_CONFIG=' .env.local | sed -E 's|.*/(ecfg_[^?]+)\?.*|\1|')
+vercel edge-config remove "$EC_ID"
+vercel env rm EDGE_CONFIG production
 ```
 
-Prompts before each destruction. Reversible WIF pool delete, irreversible dataset delete.
+Prompts before each destruction. Reversible WIF pool delete, irreversible dataset + Edge Config delete.
 
 ## Why not Segment?
 

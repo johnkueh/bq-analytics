@@ -268,3 +268,5 @@ function json(body: unknown, status = 200): Response {
     headers: { "content-type": "application/json" },
   });
 }
+
+export { createFlagsRoute, type FlagsRouteOptions } from "./next-flags.js";
