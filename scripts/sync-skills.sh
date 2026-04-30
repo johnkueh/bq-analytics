@@ -20,14 +20,24 @@ if [[ ! -d "${MARKETPLACE_DIR}/.claude-plugin" ]]; then
 fi
 
 PLUGIN_JSON="${MARKETPLACE_DIR}/.claude-plugin/plugin.json"
+MARKETPLACE_JSON="${MARKETPLACE_DIR}/.claude-plugin/marketplace.json"
 
-# Copy skill files
-for skill in install query; do
+# Copy skill files + ensure each is registered in marketplace.json
+for skill in install query flags; do
   src="${REPO_ROOT}/claude-skills/${skill}/SKILL.md"
   dest_dir="${MARKETPLACE_DIR}/skills/bq-analytics-${skill}"
   mkdir -p "$dest_dir"
   cp "$src" "${dest_dir}/SKILL.md"
   echo "synced bq-analytics-${skill}"
+
+  # Append to plugins[0].skills if missing
+  ref="./skills/bq-analytics-${skill}"
+  has=$(jq --arg r "$ref" '.plugins[0].skills | index($r)' "$MARKETPLACE_JSON")
+  if [[ "$has" == "null" ]]; then
+    jq --arg r "$ref" '.plugins[0].skills += [$r]' "$MARKETPLACE_JSON" > "${MARKETPLACE_JSON}.tmp"
+    mv "${MARKETPLACE_JSON}.tmp" "$MARKETPLACE_JSON"
+    echo "  registered ${ref} in marketplace.json"
+  fi
 done
 
 # Bump patch version (e.g. 1.3.0 -> 1.3.1)
