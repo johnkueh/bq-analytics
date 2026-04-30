@@ -91,6 +91,7 @@
     "smoke:pino": "tsx examples/cli-smoke/pino-test.ts",
     "smoke:flags": "tsx examples/cli-smoke/edge-config-smoke.ts",
     "smoke:flags-targeting": "tsx examples/cli-smoke/edge-config-targeting-smoke.ts",
+    "smoke:feedback": "tsx examples/cli-smoke/feedback-smoke.ts",
     "sync-skills": "./scripts/sync-skills.sh",
     "release": "./scripts/release.sh"
   },

@@ -47,6 +47,23 @@ PARTITION BY DATE(ts)
 CLUSTER BY user_id
 OPTIONS(description="User → group membership log. Latest row per (user_id, group_type) wins.");
 
+CREATE TABLE IF NOT EXISTS `@@EVENTS_DATASET@@.feedback` (
+  feedback_id  STRING NOT NULL,
+  ts           TIMESTAMP NOT NULL,
+  kind         STRING NOT NULL,
+  subject      STRING,
+  message      STRING NOT NULL,
+  severity     STRING,
+  url          STRING,
+  user_id      STRING,
+  anonymous_id STRING,
+  session_id   STRING,
+  properties   JSON
+)
+PARTITION BY DATE(ts)
+CLUSTER BY kind, user_id
+OPTIONS(description="Product feedback intake — bug reports, feature requests, general feedback. Joinable with events.users / events.raw on user_id for full context.");
+
 -- Materialized "current state" views
 
 CREATE OR REPLACE VIEW `@@EVENTS_DATASET@@.users` AS

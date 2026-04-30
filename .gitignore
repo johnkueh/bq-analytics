@@ -3,6 +3,9 @@ dist
 coverage
 .DS_Store
 
+# Next.js example build output
+examples/*/.next
+
 # Env files — never commit secrets
 .env
 .env.*

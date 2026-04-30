@@ -14,7 +14,7 @@ import { createLogDrainRoute } from "bq-analytics/next";
  * drained, creating an infinite loop.
  */
 export const { POST, GET } = createLogDrainRoute({
-  projectId: process.env.GCP_PROJECT_ID,
+  projectId: process.env.GCP_PROJECT_ID!,
   logsDataset: process.env.BQ_LOGS_DATASET ?? "logs",
   secret: process.env.LOG_DRAIN_SECRET!,
   vercelVerifyToken: process.env.VERCEL_VERIFY_TOKEN,

@@ -69,6 +69,41 @@ describe("createTrackRoute", () => {
     expect(body.accepted).toBe(0);
   });
 
+  it("accepts feedback records", async () => {
+    const handler = createTrackRoute({
+      projectId: "",
+      resolveUser: () => null,
+    });
+    const res = await handler(
+      new Request("http://x/api/track", {
+        method: "POST",
+        body: JSON.stringify({
+          records: [
+            {
+              kind: "feedback",
+              row: {
+                feedback_id: "f1",
+                ts: new Date().toISOString(),
+                kind: "bug",
+                subject: "x",
+                message: "broken",
+                severity: "high",
+                url: "/x",
+                user_id: null,
+                anonymous_id: null,
+                session_id: null,
+                properties: "{}",
+              },
+            },
+          ],
+        }),
+      }),
+    );
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.accepted).toBe(1);
+  });
+
   it("auth: 401 when resolveUser throws", async () => {
     const handler = createTrackRoute({
       projectId: "fake",

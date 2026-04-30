@@ -252,7 +252,7 @@ function normalizeLevel(l: string): string {
 
 function validateRecord(r: any): r is BufferedRecord {
   if (!r || typeof r !== "object") return false;
-  if (!["event", "identify", "group", "user_group", "log"].includes(r.kind)) return false;
+  if (!["event", "identify", "group", "user_group", "log", "feedback"].includes(r.kind)) return false;
   if (!r.row || typeof r.row !== "object") return false;
   return true;
 }

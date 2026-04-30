@@ -6,6 +6,7 @@ import type {
   BaseAttrs,
   BufferedRecord,
   EventRow,
+  FeedbackRow,
   GroupRow,
   IdentifyRow,
   LogRow,
@@ -14,6 +15,23 @@ import type {
   UserGroupRow,
 } from "./types.js";
 import { randomId } from "./types.js";
+
+export type FeedbackKind = "bug" | "request" | "general" | (string & {});
+
+export interface FeedbackInput {
+  /** "bug" | "request" | "general" — anything else is accepted as a custom kind. Default "general". */
+  kind?: FeedbackKind;
+  /** Optional short subject line. */
+  subject?: string;
+  /** Free-text body. Required. */
+  message: string;
+  /** For bug reports: e.g. "low" | "medium" | "high" | "critical". */
+  severity?: string;
+  /** URL / route the user was on when they submitted. */
+  url?: string;
+  /** Arbitrary structured metadata (app version, screen, build, etc.). */
+  properties?: Props;
+}
 
 export class Analytics {
   private buffer: BufferedRecord[] = [];
@@ -81,6 +99,27 @@ export class Analytics {
       fields: JSON.stringify(fields ?? {}),
     };
     this.buffer.push({ kind: "log", row });
+    this.maybeAutoFlush();
+  }
+
+  feedback(input: FeedbackInput, attrs: BaseAttrs = {}): void {
+    if (!input || typeof input.message !== "string" || input.message.length === 0) {
+      throw new Error("feedback(): message is required");
+    }
+    const row: FeedbackRow = {
+      feedback_id: randomId(),
+      ts: nowIso(),
+      kind: input.kind ?? "general",
+      subject: input.subject ?? null,
+      message: input.message,
+      severity: input.severity ?? null,
+      url: input.url ?? null,
+      user_id: attrs.userId ?? null,
+      anonymous_id: attrs.anonymousId ?? null,
+      session_id: attrs.sessionId ?? null,
+      properties: JSON.stringify(input.properties ?? {}),
+    };
+    this.buffer.push({ kind: "feedback", row });
     this.maybeAutoFlush();
   }
 

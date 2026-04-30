@@ -145,4 +145,60 @@ describe("Analytics core", () => {
       expect(r.row.user_id).toBeNull();
     }
   });
+
+  it("feedback() requires a non-empty message", () => {
+    expect(() => a.feedback({} as never)).toThrow(/message is required/);
+    expect(() => a.feedback({ message: "" })).toThrow(/message is required/);
+  });
+
+  it("feedback() defaults kind to 'general' and stamps required fields", async () => {
+    a.feedback({ message: "love this" }, { userId: "u1", sessionId: "s1" });
+    await a.flush();
+    const r = mock.sent[0]![0]!;
+    expect(r.kind).toBe("feedback");
+    if (r.kind === "feedback") {
+      expect(r.row.kind).toBe("general");
+      expect(r.row.message).toBe("love this");
+      expect(r.row.user_id).toBe("u1");
+      expect(r.row.session_id).toBe("s1");
+      expect(r.row.subject).toBeNull();
+      expect(r.row.severity).toBeNull();
+      expect(r.row.url).toBeNull();
+      expect(r.row.feedback_id).toMatch(/^[0-9a-f-]{36}$/);
+      expect(r.row.ts).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+      expect(JSON.parse(r.row.properties)).toEqual({});
+    }
+  });
+
+  it("feedback() carries kind, subject, severity, url, properties", async () => {
+    a.feedback(
+      {
+        kind: "bug",
+        subject: "Translate button does nothing",
+        message: "On iOS 17 the translate button is unresponsive after upload.",
+        severity: "high",
+        url: "/translate",
+        properties: { app_version: "1.4.2", platform: "ios" },
+      },
+      { userId: "u-bug" },
+    );
+    await a.flush();
+    const r = mock.sent[0]![0]!;
+    if (r.kind === "feedback") {
+      expect(r.row.kind).toBe("bug");
+      expect(r.row.subject).toBe("Translate button does nothing");
+      expect(r.row.severity).toBe("high");
+      expect(r.row.url).toBe("/translate");
+      expect(JSON.parse(r.row.properties)).toEqual({ app_version: "1.4.2", platform: "ios" });
+    }
+  });
+
+  it("feedback() generates unique ids per submission", async () => {
+    a.feedback({ message: "one" });
+    a.feedback({ message: "two" });
+    await a.flush();
+    const ids = mock.sent[0]!.flatMap((r) => (r.kind === "feedback" ? [r.row.feedback_id] : []));
+    expect(ids).toHaveLength(2);
+    expect(ids[0]).not.toBe(ids[1]);
+  });
 });

@@ -71,12 +71,27 @@ export type LogRow = {
   fields: string;
 };
 
+export type FeedbackRow = {
+  feedback_id: string;
+  ts: string;
+  kind: string;
+  subject: string | null;
+  message: string;
+  severity: string | null;
+  url: string | null;
+  user_id: string | null;
+  anonymous_id: string | null;
+  session_id: string | null;
+  properties: string;
+};
+
 export type BufferedRecord =
   | { kind: "event"; row: EventRow }
   | { kind: "identify"; row: IdentifyRow }
   | { kind: "group"; row: GroupRow }
   | { kind: "user_group"; row: UserGroupRow }
-  | { kind: "log"; row: LogRow };
+  | { kind: "log"; row: LogRow }
+  | { kind: "feedback"; row: FeedbackRow };
 
 export interface Transport {
   send(records: BufferedRecord[]): Promise<void>;

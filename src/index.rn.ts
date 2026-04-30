@@ -9,6 +9,7 @@ export type {
   BaseAttrs,
   BufferedRecord,
   EventRow,
+  FeedbackRow,
   GroupRow,
   IdentifyRow,
   LogRow,
@@ -17,7 +18,13 @@ export type {
   UserGroupRow,
 } from "./types.js";
 
-export { Analytics, httpTransport, type HttpTransportConfig } from "./core.js";
+export {
+  Analytics,
+  httpTransport,
+  type FeedbackInput,
+  type FeedbackKind,
+  type HttpTransportConfig,
+} from "./core.js";
 export {
   Flags,
   type Flag,

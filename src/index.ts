@@ -15,6 +15,7 @@ export type {
   BaseAttrs,
   BufferedRecord,
   EventRow,
+  FeedbackRow,
   GroupRow,
   IdentifyRow,
   LogRow,
@@ -23,7 +24,13 @@ export type {
   UserGroupRow,
 } from "./types.js";
 
-export { Analytics, httpTransport, type HttpTransportConfig } from "./core.js";
+export {
+  Analytics,
+  httpTransport,
+  type FeedbackInput,
+  type FeedbackKind,
+  type HttpTransportConfig,
+} from "./core.js";
 export {
   Flags,
   type Flag,
@@ -78,6 +85,7 @@ export function bqTransport(config: BqTransportConfig): Transport {
         else if (r.kind === "group") push("events.groups", eventsDataset, "groups", r.row);
         else if (r.kind === "user_group")
           push("events.user_groups", eventsDataset, "user_groups", r.row);
+        else if (r.kind === "feedback") push("events.feedback", eventsDataset, "feedback", r.row);
         else if (r.kind === "log") push("logs.raw", logsDataset, "raw", r.row);
       }
       await Promise.all(
