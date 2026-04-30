@@ -543,7 +543,43 @@ export const POST = createTrackRoute({
 
 Note: `enrich` runs once per record, so a batch of N events parses+stringifies properties N times. That's cheap for typical payloads but don't put expensive lookups in here — pull them from request-scoped cache or skip for events that don't need them.
 
-### 2f. After instrumentation: ship a smoke commit
+### 2f. Wire product feedback intake (optional)
+
+`analytics.feedback({ kind, subject, message, severity, url, properties }, attrs)` is part of the SDK — same buffer/flush lifecycle as `track()`. Lands in `events.feedback`, joinable with `events.users` and `events.raw` on `user_id` so the agent has one query for "user said X; what was actually happening?"
+
+`kind` ∈ `"bug" | "request" | "general"` (any string accepted). One method covers all three intents — matches the dominant pattern (Sentry, Featurebase). Anonymous submissions are accepted.
+
+**Skip unless** the user has (a) an existing in-app feedback / contact form, or (b) wants Claude to investigate user-reported issues with full session context. Otherwise leave it for them to opt into later.
+
+**Surfaces to look for and wire up:**
+
+```sh
+# in-app feedback / contact / support buttons
+rg -l 'feedback|contact|support|report.{0,20}bug' --type ts --type tsx | head
+# error boundaries / crash reporters where you might want to attach a feedback prompt
+rg -l 'ErrorBoundary|componentDidCatch|window\.onerror' --type ts --type tsx
+# existing helpdesk integrations to mirror
+rg -l 'intercom|crisp|plain\.com|@plain/sdk|usepylon' --type ts --type tsx
+```
+
+**Typical wiring** — replace any `fetch('/api/contact', ...)` / Intercom send with `analytics.feedback()`. The same `/api/track` handler accepts the new `kind: "feedback"` records, no new route needed:
+
+```tsx
+// client widget
+analytics.feedback(
+  { kind: "bug", message, url: location.pathname, properties: { app_version } },
+  { userId },
+);
+await analytics.flush();   // browser autoflush will also catch it on pagehide
+
+// server (e.g. /api/contact wrapping a real ticketing system)
+analytics().feedback({ kind: "general", subject, message }, { userId });
+after(() => analytics().flush());
+```
+
+**Don't oversell it** — bq-analytics doesn't ship an inbox, replies, or ticket status. If the project needs those, suggest mirroring into Linear/Plain/Pylon and using `feedback()` purely as the warehouse mirror for agent investigation. The README's "Product feedback" section has the framing.
+
+### 2g. After instrumentation: ship a smoke commit
 
 Before the user redeploys:
 

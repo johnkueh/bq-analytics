@@ -18,6 +18,10 @@ events.users                  — view: latest traits per user_id.
 events.groups_current         — view: latest traits per (group_type, group_id).
 events.user_groups_current    — view: most-recent group per (user_id, group_type).
 
+events.feedback      — append-only product feedback. Hot columns: kind, user_id, ts.
+                       kind ∈ {"bug", "request", "general", ...custom}.
+                       JSON: properties. Plain TEXT: subject, message.
+
 logs.raw             — Vercel Log Drain landing zone + SDK log() calls.
                        Hot columns: ts, level, path, status, message.
                        JSON: fields (SDK-emitted only).
@@ -98,6 +102,60 @@ WHERE ug.group_type = 'household'
   AND DATE(e.ts) > CURRENT_DATE() - 30
 GROUP BY 1, 2 ORDER BY n DESC;
 ```
+
+### Recent bug reports with user context
+
+```sql
+SELECT f.ts, f.subject, f.message,
+       JSON_VALUE(u.traits, '$.plan')        AS plan,
+       JSON_VALUE(u.traits, '$.app_version') AS app_version,
+       JSON_VALUE(f.properties, '$.platform') AS platform
+FROM `proj.events.feedback` f
+LEFT JOIN `proj.events.users` u USING (user_id)
+WHERE f.kind = 'bug'
+  AND DATE(f.ts) > CURRENT_DATE() - 7
+ORDER BY f.ts DESC LIMIT 50;
+```
+
+### Investigation: feedback + last 30 min of user activity
+
+The agent-investigation pattern. One query gives you the report + traits + the user's recent events leading up to it — no cross-system stitching.
+
+```sql
+WITH f AS (
+  SELECT * FROM `proj.events.feedback`
+  WHERE DATE(ts) > CURRENT_DATE() - 7
+    AND kind = 'bug'
+    AND user_id = 'u_alice'              -- or filter by feedback_id
+)
+SELECT
+  f.feedback_id, f.ts AS reported_at, f.subject, f.message,
+  JSON_VALUE(u.traits, '$.plan')        AS plan,
+  JSON_VALUE(u.traits, '$.app_version') AS app_version,
+  ARRAY(
+    SELECT AS STRUCT e.event_name, e.ts, e.properties
+    FROM `proj.events.raw` e
+    WHERE e.user_id = f.user_id
+      AND e.ts BETWEEN TIMESTAMP_SUB(f.ts, INTERVAL 30 MINUTE) AND f.ts
+    ORDER BY e.ts DESC LIMIT 20
+  ) AS recent_events
+FROM f
+LEFT JOIN `proj.events.users` u USING (user_id)
+ORDER BY f.ts DESC;
+```
+
+### Feature requests grouped by theme (manual triage)
+
+```sql
+SELECT subject, message, ts, user_id,
+       JSON_VALUE(properties, '$.app_version') AS app_version
+FROM `proj.events.feedback`
+WHERE kind = 'request'
+  AND DATE(ts) > CURRENT_DATE() - 30
+ORDER BY ts DESC;
+```
+
+For semantic clustering, dump the messages and feed them to the agent — BQ doesn't do similarity search natively at indie scale.
 
 ### Replace `vercel logs --query "beacon"`
 

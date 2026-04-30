@@ -285,6 +285,84 @@ that bloats `events.raw` for no query benefit.
 
 There's no native SDK. POST events directly to your `/api/track` route from any HTTP client. The schema is `{ records: [{ kind: "event", row: {...} }, ...] }` — see `src/types.ts` for the row shapes.
 
+## Product feedback
+
+Optional. One method on the SDK accepts bug reports, feature requests, and general feedback into a dedicated `events.feedback` BigQuery table — joinable with `events.users` and `events.raw` on `user_id`, so a Claude agent has one query for "this user said the upload broke; what was actually happening at that moment?"
+
+```ts
+analytics.feedback(
+  {
+    kind: "bug",                          // "bug" | "request" | "general" | (custom)
+    subject: "Translate button does nothing",
+    message: "After uploading a video, the Translate button is unresponsive.",
+    severity: "high",                     // free-text, optional
+    url: "/translate",                    // path/route at submission time
+    properties: { app_version: "1.4.2", platform: "ios" },
+  },
+  { userId, sessionId },
+);
+```
+
+Same intake as `track`/`identify`/`group` — buffered and flushed via the same lifecycle. Browser/RN submissions ride `/api/track`; server and CLI write direct via `bqTransport`. Anonymous submissions are accepted (omit `userId`).
+
+This is **intake + warehouse**, not a helpdesk. There's no inbox UI, threading, or status mutation — those belong in Linear/Plain/Pylon if you need them. The point here is "Claude has the full story when investigating."
+
+### Schema
+
+```sql
+events.feedback   feedback_id, ts, kind, subject, message, severity, url,
+                  user_id, anonymous_id, session_id, properties JSON
+```
+
+Partitioned by `DATE(ts)`, clustered on `(kind, user_id)`. The `properties` JSON column is open-ended — stamp `app_version`, `build_number`, `screen`, `device`, anything you want.
+
+### Per-runtime
+
+The same method works on every transport. Pick the lifecycle that matches:
+
+```ts
+// Browser — flushes on visibilitychange/pagehide via attachBrowserAutoFlush
+analytics.feedback({ kind: "bug", message }, { userId });
+
+// Expo / RN — same shape, persists to AsyncStorage on transport failure
+analytics.feedback({ kind: "request", message, properties: { platform: Platform.OS } }, { userId });
+
+// Server (Next.js) — flush via after()
+analytics.feedback({ kind: "general", message }, { userId });
+after(() => analytics.flush());
+
+// CLI — flushAt: 1 or await flush() before exit
+analytics.feedback({ kind: "bug", message: err.message }, { userId });
+await analytics.flush();
+```
+
+### Investigating with full context
+
+Join feedback to traits and recent events for the "what was happening" story:
+
+```sql
+WITH f AS (
+  SELECT * FROM `proj.events.feedback`
+  WHERE DATE(ts) > CURRENT_DATE() - 7 AND kind = 'bug'
+)
+SELECT
+  f.feedback_id, f.ts AS reported_at, f.subject, f.message,
+  JSON_VALUE(u.traits, '$.plan')        AS plan,
+  JSON_VALUE(u.traits, '$.app_version') AS app_version,
+  ARRAY(
+    SELECT AS STRUCT e.event_name, e.ts
+    FROM `proj.events.raw` e
+    WHERE e.user_id = f.user_id
+      AND e.ts BETWEEN TIMESTAMP_SUB(f.ts, INTERVAL 30 MINUTE) AND f.ts
+    ORDER BY e.ts DESC LIMIT 20
+  ) AS recent_events
+FROM f
+LEFT JOIN `proj.events.users` u USING (user_id)
+ORDER BY f.ts DESC LIMIT 50;
+```
+
+That single query gives an agent: the bug report, the user's plan + build, and the last 30 minutes of their session. No cross-system stitching.
+
 ## Feature flags
 
 Optional. Backed by Vercel Edge Config; sub-second propagation; ~free at indie scale; exposures auto-track to `events.raw` so impact analysis is just BigQuery.
@@ -406,6 +484,9 @@ events.users          ── view: latest traits per user_id
 events.groups_current ── view: latest traits per (group_type, group_id)
 events.user_groups_current ── view: most-recent group per user/type
 
+events.feedback      feedback_id, ts, kind, subject, message, severity, url,
+                     user_id, anonymous_id, session_id, properties JSON
+
 logs.raw             ts, level, source, message, fields JSON, request_id, deployment_id, path, status, region, raw
 ```
 
@@ -427,6 +508,15 @@ bq query --nouse_legacy_sql --format=json '
   WHERE e.event_name = "translation.completed"
     AND JSON_VALUE(u.traits, "$.plan") = "pro"
     AND JSON_VALUE(u.traits, "$.plan_period") = "yearly"'
+
+# bug reports from pro users in the last week
+bq query --nouse_legacy_sql --format=json '
+  SELECT f.subject, f.message, JSON_VALUE(u.traits, "$.email") AS email
+  FROM `proj.events.feedback` f
+  LEFT JOIN `proj.events.users` u USING (user_id)
+  WHERE f.kind = "bug" AND DATE(f.ts) > CURRENT_DATE() - 7
+    AND JSON_VALUE(u.traits, "$.plan") = "pro"
+  ORDER BY f.ts DESC'
 
 # replace `vercel logs --query`
 bq query --nouse_legacy_sql --format=json '
