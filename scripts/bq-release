@@ -1,0 +1,380 @@
+#!/usr/bin/env node
+/**
+ * bq-release — manage the `release` Edge Config blob.
+ *
+ * Reads directly from Edge Config when EDGE_CONFIG is in env (auto-loaded
+ * from .env.local). Falls back to a public read URL with a stale-cache
+ * warning. Writes via `vercel edge-config update <slug> --patch`.
+ *
+ * Usage:
+ *   bq-release show [--json]
+ *   bq-release gate off
+ *   bq-release gate soft <minBuild>
+ *   bq-release gate hard <minBuild> [--message "..."]
+ *   bq-release notes <version> [--from <file.json>]   (entries via stdin if no --from)
+ *   bq-release clear-notes
+ *   bq-release urls set <channel> <platform> <url>
+ *   bq-release urls remove <channel> [<platform>]
+ *
+ * Required flags / env (one of each pair):
+ *   --slug <s>         OR  $EDGE_CONFIG_SLUG       e.g. "myapp-edge-config"
+ *   --api-url <url>    OR  $RELEASE_API_URL        public fallback read URL
+ *
+ * Optional:
+ *   --key <k>          OR  $EDGE_CONFIG_RELEASE_KEY  default "release"
+ *   --dry-run                                       preview JSON, don't push
+ */
+
+import { spawnSync } from "node:child_process";
+import { existsSync, readFileSync } from "node:fs";
+import { resolve as pathResolve } from "node:path";
+
+// --- env loader (no dotenv dep) ----------------------------------------
+function loadEnvFile(path) {
+  if (!existsSync(path)) return;
+  const content = readFileSync(path, "utf8");
+  for (const line of content.split("\n")) {
+    const m = line.match(/^([A-Z_][A-Z0-9_]*)\s*=\s*"?(.*?)"?\s*$/);
+    if (m && !process.env[m[1]]) process.env[m[1]] = m[2];
+  }
+}
+loadEnvFile(pathResolve(process.cwd(), ".env.local"));
+
+// --- args --------------------------------------------------------------
+function parseFlags(args) {
+  const positional = [];
+  const flags = {};
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (a.startsWith("--")) {
+      const key = a.slice(2);
+      const next = args[i + 1];
+      if (next !== undefined && !next.startsWith("--")) {
+        flags[key] = next;
+        i++;
+      } else {
+        flags[key] = true;
+      }
+    } else {
+      positional.push(a);
+    }
+  }
+  return { positional, flags };
+}
+
+function die(msg, code = 1) {
+  console.error(`error: ${msg}`);
+  process.exit(code);
+}
+
+function usage() {
+  console.error(`Usage:
+  bq-release show [--json]
+  bq-release gate off
+  bq-release gate soft <minBuild>
+  bq-release gate hard <minBuild> [--message "..."]
+  bq-release notes <version> [--from <file.json>]
+  bq-release clear-notes
+  bq-release urls set <channel> <platform> <url>
+  bq-release urls remove <channel> [<platform>]
+
+Configuration (flag or env, at least one of slug/api-url):
+  --slug <s>      | EDGE_CONFIG_SLUG          Edge Config slug for writes
+  --api-url <url> | RELEASE_API_URL           Public read URL fallback
+  --key <k>       | EDGE_CONFIG_RELEASE_KEY   Default "release"
+
+Common flags:
+  --dry-run        Preview the JSON without pushing
+  --message <s>    Custom message (gate hard only)
+  --from <path>    JSON file containing entries (notes only)
+`);
+  process.exit(1);
+}
+
+function parseInt10(s) {
+  const n = Number(s);
+  if (!Number.isFinite(n) || Math.floor(n) !== n) {
+    die(`expected integer, got "${s}"`);
+  }
+  return n;
+}
+
+function isPlatform(s) {
+  return s === "ios" || s === "android";
+}
+
+function readStdin() {
+  return readFileSync(0, "utf8");
+}
+
+// --- env / config ------------------------------------------------------
+let _slug = null;
+let _apiUrl = null;
+let _key = null;
+
+function bootConfig(flags) {
+  _slug = flags.slug || process.env.EDGE_CONFIG_SLUG || null;
+  _apiUrl = flags["api-url"] || process.env.RELEASE_API_URL || null;
+  _key =
+    flags.key ||
+    process.env.EDGE_CONFIG_RELEASE_KEY ||
+    "release";
+}
+
+// --- read --------------------------------------------------------------
+async function readCurrent() {
+  // Prefer reading directly from Edge Config — the public API has a
+  // CDN cache, so back-to-back writes within that window can read
+  // stale state and resurrect just-removed fields on push.
+  const edgeConfigUrl = process.env.EDGE_CONFIG;
+  if (edgeConfigUrl) {
+    const { createClient } = await import("@vercel/edge-config");
+    const client = createClient(edgeConfigUrl);
+    const value = await client.get(_key);
+    if (!value) {
+      // Key missing — bootstrap a no-op config so subsequent writes
+      // have something to merge into.
+      return defaultConfig();
+    }
+    return value;
+  }
+  if (!_apiUrl) {
+    die(
+      "EDGE_CONFIG not set and no --api-url / RELEASE_API_URL provided.\n" +
+        "  Provision via setup-release.sh or pass an API URL fallback.",
+    );
+  }
+  console.warn(
+    "[bq-release] EDGE_CONFIG not set; reading via cached API (may be stale up to 60s).\n" +
+      "  Run setup-release.sh + `vercel env pull .env.local` to enable direct reads.",
+  );
+  const url = `${_apiUrl}?_t=${Date.now()}`;
+  const res = await fetch(url, { headers: { "cache-control": "no-cache" } });
+  if (!res.ok) die(`failed to read ${_apiUrl}: ${res.status}`);
+  return res.json();
+}
+
+function defaultConfig() {
+  return {
+    gate: { minIosBuild: 0, minAndroidBuild: 0, hardBlock: false },
+    whatsNew: null,
+  };
+}
+
+// --- write -------------------------------------------------------------
+function push(value, dryRun) {
+  if (dryRun) {
+    console.log("--- DRY RUN ---\nWould push the following config:");
+    console.log(JSON.stringify(value, null, 2));
+    return;
+  }
+  if (!_slug) {
+    die(
+      "writes require --slug or EDGE_CONFIG_SLUG.\n" +
+        "  e.g. --slug myapp-edge-config",
+    );
+  }
+  const patch = JSON.stringify({
+    items: [{ operation: "update", key: _key, value }],
+  });
+  const result = spawnSync(
+    "vercel",
+    ["edge-config", "update", _slug, "--patch", patch],
+    { stdio: "inherit" },
+  );
+  if (result.status !== 0) {
+    die(`vercel edge-config update failed (exit ${result.status})`);
+  }
+}
+
+// --- subcommands -------------------------------------------------------
+async function showCmd(jsonOutput) {
+  const cfg = await readCurrent();
+  if (jsonOutput) {
+    console.log(JSON.stringify(cfg, null, 2));
+    return;
+  }
+  const { gate = {}, whatsNew, updateUrls } = cfg;
+  const verdict =
+    gate.minIosBuild === 0 && gate.minAndroidBuild === 0
+      ? "off"
+      : gate.hardBlock
+        ? "HARD"
+        : "soft";
+  console.log(`Gate: ${verdict}`);
+  console.log(
+    `  minIosBuild: ${gate.minIosBuild}   minAndroidBuild: ${gate.minAndroidBuild}`,
+  );
+  if (gate.message) console.log(`  message: ${gate.message}`);
+  console.log("");
+  if (whatsNew) {
+    console.log(`What's new: ${whatsNew.version}`);
+    for (const entry of whatsNew.entries || []) {
+      console.log(`  • ${entry.title}`);
+      if (entry.cta) {
+        console.log(`      ↪ ${entry.cta.label}: ${entry.cta.url}`);
+      }
+    }
+  } else {
+    console.log("What's new: (none)");
+  }
+  console.log("");
+  if (updateUrls && Object.keys(updateUrls).length > 0) {
+    console.log("Update URLs:");
+    for (const [channel, urls] of Object.entries(updateUrls)) {
+      console.log(`  ${channel}:`);
+      if (urls.ios) console.log(`    ios:     ${urls.ios}`);
+      if (urls.android) console.log(`    android: ${urls.android}`);
+    }
+  } else {
+    console.log("Update URLs: (defaults — production App Store / Play Store)");
+  }
+}
+
+async function gateCmd(sub, positional, flags) {
+  const dryRun = flags["dry-run"] === true;
+  const cfg = await readCurrent();
+  if (sub === "off") {
+    cfg.gate = { minIosBuild: 0, minAndroidBuild: 0, hardBlock: false };
+    push(cfg, dryRun);
+    return;
+  }
+  if (sub === "soft" || sub === "hard") {
+    const minStr = positional[0];
+    if (!minStr) die(`gate ${sub} requires <minBuild>`);
+    const min = parseInt10(minStr);
+    cfg.gate = {
+      minIosBuild: min,
+      minAndroidBuild: min,
+      hardBlock: sub === "hard",
+    };
+    if (typeof flags.message === "string") cfg.gate.message = flags.message;
+    push(cfg, dryRun);
+    return;
+  }
+  die(`unknown gate subcommand: ${sub}`);
+}
+
+async function notesCmd(positional, flags) {
+  const dryRun = flags["dry-run"] === true;
+  const version = positional[0];
+  if (!version) die("notes requires <version>");
+  let payloadRaw;
+  if (typeof flags.from === "string") {
+    payloadRaw = readFileSync(flags.from, "utf8");
+  } else {
+    if (process.stdin.isTTY) {
+      die("notes: provide --from <file.json> or pipe entries JSON to stdin");
+    }
+    payloadRaw = readStdin();
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(payloadRaw);
+  } catch (e) {
+    die(`failed to parse entries JSON: ${e.message}`);
+  }
+  const entries = Array.isArray(parsed) ? parsed : parsed?.entries;
+  if (!Array.isArray(entries) || entries.length === 0) {
+    die("entries must be a non-empty array");
+  }
+  for (const entry of entries) {
+    if (
+      !entry ||
+      typeof entry !== "object" ||
+      typeof entry.title !== "string" ||
+      typeof entry.body !== "string"
+    ) {
+      die("every entry needs { title: string, body: string }");
+    }
+  }
+  const cfg = await readCurrent();
+  cfg.whatsNew = { version, entries };
+  push(cfg, dryRun);
+}
+
+async function clearNotesCmd(flags) {
+  const dryRun = flags["dry-run"] === true;
+  const cfg = await readCurrent();
+  cfg.whatsNew = null;
+  push(cfg, dryRun);
+}
+
+async function urlsCmd(sub, positional, flags) {
+  const dryRun = flags["dry-run"] === true;
+  const cfg = await readCurrent();
+  cfg.updateUrls = cfg.updateUrls || {};
+  if (sub === "set") {
+    const [channel, platform, url] = positional;
+    if (!channel || !platform || !url) {
+      die("urls set requires <channel> <platform> <url>");
+    }
+    if (!isPlatform(platform)) die('platform must be "ios" or "android"');
+    cfg.updateUrls[channel] = {
+      ...cfg.updateUrls[channel],
+      [platform]: url,
+    };
+    push(cfg, dryRun);
+    return;
+  }
+  if (sub === "remove") {
+    const [channel, platform] = positional;
+    if (!channel) die("urls remove requires <channel>");
+    if (platform) {
+      if (!isPlatform(platform)) die('platform must be "ios" or "android"');
+      const entry = cfg.updateUrls[channel];
+      if (entry) {
+        delete entry[platform];
+        if (!entry.ios && !entry.android) delete cfg.updateUrls[channel];
+      }
+    } else {
+      delete cfg.updateUrls[channel];
+    }
+    if (Object.keys(cfg.updateUrls).length === 0) delete cfg.updateUrls;
+    push(cfg, dryRun);
+    return;
+  }
+  die(`unknown urls subcommand: ${sub}`);
+}
+
+// --- main --------------------------------------------------------------
+async function main() {
+  const argv = process.argv.slice(2);
+  if (argv.length === 0) usage();
+  const [verb, ...rest] = argv;
+  const { positional, flags } = parseFlags(rest);
+  bootConfig(flags);
+
+  switch (verb) {
+    case "show":
+      await showCmd(flags.json === true);
+      return;
+    case "gate": {
+      const [sub, ...subPositional] = positional;
+      await gateCmd(sub, subPositional, flags);
+      return;
+    }
+    case "notes":
+      await notesCmd(positional, flags);
+      return;
+    case "clear-notes":
+      await clearNotesCmd(flags);
+      return;
+    case "urls": {
+      const [sub, ...subPositional] = positional;
+      await urlsCmd(sub, subPositional, flags);
+      return;
+    }
+    case "--help":
+    case "-h":
+    case "help":
+      usage();
+    default:
+      die(`unknown command: ${verb}\n(run with --help for usage)`);
+  }
+}
+
+main().catch((err) => {
+  console.error(err);
+  process.exit(1);
+});
