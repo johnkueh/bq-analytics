@@ -449,6 +449,98 @@ Stored as one JSON object under the `flags` key in Edge Config:
 | Browser (Next.js client) | `httpSource({ url: "/api/flags" })` | Through your `/api/flags` route |
 | React Native / Expo | `httpSource({ url: \`\${API_URL}/api/flags\` })` | Same — never expose Edge Config token |
 
+## Release config (force-update + what's-new)
+
+Optional. Server-driven release UX for Expo / React Native apps: force-update gate (hard block / soft nudge), post-update what's-new sheet, channel-aware store deeplinks. One opinionated Edge Config blob under the key `release`. Same store as flags is fine.
+
+```ts
+// src/app/api/release-config/route.ts (Next.js)
+import { createReleaseConfigRoute } from "bq-analytics/next/release";
+export const GET = createReleaseConfigRoute();
+// Reads `release` from Edge Config, validates, returns JSON with 60s edge cache.
+```
+
+```tsx
+// app/_layout.tsx (Expo / RN) — headless components, you provide UI via render props
+import { UpdateGate, ReleaseNotesPrompt } from "bq-analytics/release/native";
+
+<UpdateGate
+  iosAppId="123456789"
+  androidPackage="com.example.app"
+  renderHardBlock={({ message, openStore }) => (
+    <YourForceUpdateScreen message={message} onUpdate={openStore} />
+  )}
+>
+  <App />
+  <ReleaseNotesPrompt
+    iosAppId="123456789"
+    androidPackage="com.example.app"
+    render={(ctx) => <YourWhatsNewSheet {...ctx} />}
+  />
+</UpdateGate>
+```
+
+`ctx` gives the sheet `{notes, verdict, onDismiss, onUpdate, onCtaTap}`. Verdict (`'ok'` | `'soft'`) drives the primary CTA; `'hard'` never reaches the sheet (the gate replaces children).
+
+### Setup (one-time per repo)
+
+```sh
+./scripts/setup-edge-config.sh   # if you don't already have an Edge Config store
+./scripts/setup-release.sh       # seeds the `release` key with the no-op default
+```
+
+### Operating release config — `bq-release` CLI
+
+```sh
+bq-release show                                   # current state
+bq-release gate off                               # disable the gate
+bq-release gate soft 42                           # nudge users below build 42
+bq-release gate hard 42 --message "Critical fix"  # full-screen block
+bq-release notes "v1.1.0" --from notes.json       # publish what's-new
+bq-release clear-notes
+bq-release urls set preview ios "itms-beta://..."
+```
+
+Read-merge-write semantics — partial updates don't blow away other fields. All write commands accept `--dry-run`. Reads directly from Edge Config (no CDN cache lag). See `claude-skills/release/SKILL.md` for the full operations guide and per-release drafting workflow.
+
+### Release config shape
+
+```json
+{
+  "gate": {
+    "minIosBuild": 0,
+    "minAndroidBuild": 0,
+    "hardBlock": false,
+    "message": "optional override copy"
+  },
+  "whatsNew": {
+    "version": "v1.1.0",
+    "entries": [
+      { "title": "Faster reel imports", "body": "Half the time on IG and TikTok." },
+      { "title": "Allergen badges", "body": "Quick warning when household allergens match.",
+        "cta": { "label": "Set up", "url": "myapp://household/allergens" } }
+    ]
+  },
+  "updateUrls": {
+    "production": { "ios": "itms-apps://...", "android": "market://..." },
+    "preview":    { "ios": "itms-beta://..." }
+  }
+}
+```
+
+Validator is permissive — only `gate` shape is enforced; extra fields pass through so you can roll out richer schemas without breaking older clients.
+
+### Telemetry
+
+```ts
+import { RELEASE_EVENTS } from "bq-analytics/release";
+// "update_gate.shown" | "update_gate.feedback_tapped"
+// "whats_new.shown"   | "whats_new.dismissed" | "whats_new.update_tapped"
+// "whats_new.feedback_tapped" | "whats_new.cta_tapped"
+```
+
+Cohorts slice by the existing `app_version` / `build_number` / `runtime_version` traits on `identify`.
+
 ## Architecture
 
 ```
