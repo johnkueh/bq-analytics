@@ -23,7 +23,7 @@ PLUGIN_JSON="${MARKETPLACE_DIR}/.claude-plugin/plugin.json"
 MARKETPLACE_JSON="${MARKETPLACE_DIR}/.claude-plugin/marketplace.json"
 
 # Copy skill files + ensure each is registered in marketplace.json
-for skill in install query flags; do
+for skill in install query flags release; do
   src="${REPO_ROOT}/claude-skills/${skill}/SKILL.md"
   dest_dir="${MARKETPLACE_DIR}/skills/bq-analytics-${skill}"
   mkdir -p "$dest_dir"
