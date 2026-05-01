@@ -1,6 +1,6 @@
 {
   "name": "bq-analytics",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Tiny analytics SDK that sends events directly to BigQuery. PostHog/Segment-shaped API, ~$0/month at indie scale, queryable with bq CLI.",
   "license": "MIT",
   "repository": {
@@ -58,6 +58,30 @@
       "types": "./dist/flag-sources/edge-config.d.ts",
       "import": "./dist/flag-sources/edge-config.js"
     },
+    "./config": {
+      "types": "./dist/config/index.d.ts",
+      "import": "./dist/config/index.js"
+    },
+    "./config/edge-config": {
+      "types": "./dist/config/edge-config.d.ts",
+      "import": "./dist/config/edge-config.js"
+    },
+    "./config/http": {
+      "types": "./dist/config/http.d.ts",
+      "import": "./dist/config/http.js"
+    },
+    "./release": {
+      "types": "./dist/release/index.d.ts",
+      "import": "./dist/release/index.js"
+    },
+    "./release/native": {
+      "types": "./dist/release/native/index.d.ts",
+      "import": "./dist/release/native/index.js"
+    },
+    "./next/release": {
+      "types": "./dist/handlers/next-release.d.ts",
+      "import": "./dist/handlers/next-release.js"
+    },
     "./cli": {
       "types": "./dist/cli/attach.d.ts",
       "import": "./dist/cli/attach.js"
@@ -72,7 +96,8 @@
     }
   },
   "bin": {
-    "bq-flags": "./scripts/bq-flags"
+    "bq-flags": "./scripts/bq-flags",
+    "bq-release": "./scripts/bq-release"
   },
   "files": [
     "dist",
@@ -99,18 +124,41 @@
     "sync-skills": "./scripts/sync-skills.sh",
     "release": "./scripts/release.sh"
   },
-  "dependencies": {},
   "peerDependencies": {
+    "@react-native-async-storage/async-storage": "*",
+    "@vercel/edge-config": ">=1",
+    "@vercel/functions": ">=2",
+    "expo-constants": "*",
+    "expo-updates": "*",
+    "expo-web-browser": "*",
     "next": ">=14",
     "pino": ">=8",
-    "@vercel/functions": ">=2",
-    "@vercel/edge-config": ">=1"
+    "react": ">=18",
+    "react-native": "*"
   },
   "peerDependenciesMeta": {
     "next": {
       "optional": true
     },
     "pino": {
+      "optional": true
+    },
+    "react": {
+      "optional": true
+    },
+    "react-native": {
+      "optional": true
+    },
+    "expo-constants": {
+      "optional": true
+    },
+    "expo-updates": {
+      "optional": true
+    },
+    "expo-web-browser": {
+      "optional": true
+    },
+    "@react-native-async-storage/async-storage": {
       "optional": true
     },
     "@vercel/functions": {
@@ -121,10 +169,18 @@
     }
   },
   "devDependencies": {
+    "@react-native-async-storage/async-storage": "^3.0.2",
     "@types/node": "^22.10.0",
+    "@types/react": "^19.0.0",
+    "@types/react-native": "^0.73.0",
     "@vercel/edge-config": "^1.4.0",
     "@vercel/functions": "^2.0.0",
+    "expo-constants": "^55.0.15",
+    "expo-updates": "^55.0.21",
+    "expo-web-browser": "^55.0.14",
     "pino": "^9.5.0",
+    "react": "^19",
+    "react-native": "^0.83",
     "tsup": "^8.3.0",
     "tsx": "^4.19.0",
     "typescript": "^5.7.0",
