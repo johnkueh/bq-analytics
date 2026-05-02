@@ -84,6 +84,23 @@ export interface PendingUpdatePromptProps {
    */
   render: (ctx: PendingUpdateRenderContext) => ReactNode;
   /**
+   * Optional. Render a full-screen blocking overlay during the silent
+   * reload path (only fires when `silentReloadAfterBackgroundMs` is
+   * also set). The overlay paints for ~200ms before reloadAsync tears
+   * down the JS context, so the user sees overlay → native splash →
+   * new bundle as one continuous screen instead of a sheet flash.
+   *
+   * If omitted, the silent reload still fires but the user briefly
+   * sees whatever screen they were on (or a moment of the regular
+   * PendingUpdate sheet) before the reload kicks in.
+   *
+   * Recommended: render the same splash/launch image the OS shows on
+   * cold-start so the visual handoff is invisible. While the overlay
+   * is showing, the regular `render` prop's `visible` is forced false
+   * to avoid a sheet flash competing with the overlay.
+   */
+  renderApplying?: () => ReactNode;
+  /**
    * Optional Analytics. When supplied, fires `pending_update.*` events
    * (shown, applied, dismissed) keyed by updateId.
    */
@@ -131,6 +148,7 @@ export interface PendingUpdatePromptProps {
 
 export function PendingUpdatePrompt({
   render,
+  renderApplying,
   analytics,
   enabledInDev = false,
   silentReloadAfterBackgroundMs,
@@ -138,6 +156,12 @@ export function PendingUpdatePrompt({
   const { isUpdatePending, availableUpdate, currentlyRunning } =
     Updates.useUpdates();
   const appStateRef = useRef<AppStateStatus>(AppState.currentState);
+  // True while the silent path is fetching+applying. When true, the
+  // consumer's renderApplying overlay paints over everything and the
+  // regular render prop's `visible` is forced false. Cleared on error
+  // (so the user can see the regular sheet path); on success, the JS
+  // context tears down before this state matters.
+  const [silentApplying, setSilentApplying] = useState(false);
 
   // Silent reload on long-background-return. Skipped in __DEV__ (no
   // real OTA there) and when the prop is omitted (current behavior).
@@ -194,11 +218,19 @@ export function PendingUpdatePrompt({
             silent: true,
             bg_duration_ms: bgDuration,
           });
+          // Paint the renderApplying overlay before tearing down the
+          // JS context — gives the consumer a chance to put a full-
+          // screen splash up so the user sees a continuous "app is
+          // loading" surface instead of a brief sheet flash. 200ms is
+          // enough for one render frame + commit on iOS / Android.
+          setSilentApplying(true);
+          await new Promise((resolve) => setTimeout(resolve, 200));
           await Updates.reloadAsync();
         } catch {
           // Network / not-signed-in / no-update / etc — silent. The
           // existing sheet path still surfaces any pending bundle on
           // the next user interaction.
+          setSilentApplying(false);
         }
       })();
     });
@@ -260,6 +292,7 @@ export function PendingUpdatePrompt({
     !!updateId && hydratedForId === updateId;
 
   const visible =
+    !silentApplying &&
     (enabledInDev || !__DEV__) &&
     isUpdatePending &&
     isDifferent &&
@@ -342,6 +375,7 @@ export function PendingUpdatePrompt({
         onDismiss: handleDismiss,
         applying,
       })}
+      {silentApplying && renderApplying ? renderApplying() : null}
     </>
   );
 }
