@@ -205,6 +205,22 @@ export function PendingUpdatePrompt({
 
           const result = await Updates.checkForUpdateAsync();
           if (!result.isAvailable) return;
+          // Set silentApplying=true BEFORE the fetch so the regular
+          // PendingUpdate sheet stays suppressed for the entire
+          // fetch+reload window. Setting it AFTER the fetch (the
+          // 0.7.2 ordering) let the sheet briefly render during the
+          // fetch when isUpdatePending was already true from a prior
+          // checkForUpdateAsync — user sees a sheet flash, then a
+          // broken modal-stack on reload (recipes.im incident
+          // 2026-05-02 ~01:48). This sequencing fix is the actual
+          // fix; the renderApplying overlay is the visible-to-user
+          // half but the suppression timing was the latent bug.
+          setSilentApplying(true);
+          // Give the consumer's renderApplying overlay one render
+          // frame to paint before we kick off the fetch. Without
+          // this the user sees their existing screen during the
+          // ~1-3s fetch.
+          await new Promise((resolve) => setTimeout(resolve, 16));
           await Updates.fetchUpdateAsync();
           // Persist BEFORE reload — reloadAsync tears down the JS
           // context, so any post-call write may not commit. Without
@@ -218,13 +234,6 @@ export function PendingUpdatePrompt({
             silent: true,
             bg_duration_ms: bgDuration,
           });
-          // Paint the renderApplying overlay before tearing down the
-          // JS context — gives the consumer a chance to put a full-
-          // screen splash up so the user sees a continuous "app is
-          // loading" surface instead of a brief sheet flash. 200ms is
-          // enough for one render frame + commit on iOS / Android.
-          setSilentApplying(true);
-          await new Promise((resolve) => setTimeout(resolve, 200));
           await Updates.reloadAsync();
         } catch {
           // Network / not-signed-in / no-update / etc — silent. The
