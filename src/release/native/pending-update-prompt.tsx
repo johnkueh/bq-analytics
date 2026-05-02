@@ -112,6 +112,32 @@ export interface PendingUpdatePromptProps {
    */
   enabledInDev?: boolean;
   /**
+   * When set, suppresses the PendingUpdate sheet entirely for `isUpdatePending`
+   * bundles and instead silently applies them after this many ms have
+   * passed since the bundle became pending. Catches the cold-start /
+   * in-session case (expo-updates' `checkAutomatically: 'ON_LOAD'`
+   * fetches a new bundle while the user is browsing) which the
+   * `silentReloadAfterBackgroundMs` AppState handler doesn't catch.
+   *
+   * The delay gives the user a moment to finish a tap / scroll /
+   * navigation before the JS context tears down. Recommended values:
+   *   - 30_000 (30s) for short-session apps where users settle quickly
+   *   - 60_000 (60s) for productivity apps where users may be
+   *     mid-typing
+   *
+   * Cascade-safe via the same `lastReloadedAt` cooldown as the
+   * AppState path. Omitting (default) keeps the PendingUpdate sheet
+   * as the cold-start path; setting it makes ALL OTA application
+   * silent (no sheet ever auto-summons).
+   *
+   * Per the Expo docs recommendation: "only do a reload in the
+   * background if the app has been inactive for a certain period of
+   * time, after which a user is unlikely to expect the app to restore
+   * its previous state." This prop applies the same intent to the
+   * in-session window.
+   */
+  silentReloadAfterPendingMs?: number;
+  /**
    * When set, enables silent OTA application on background→active
    * transitions where the previous background lasted at least this many
    * ms. The behavior on a qualifying transition:
@@ -152,6 +178,7 @@ export function PendingUpdatePrompt({
   analytics,
   enabledInDev = false,
   silentReloadAfterBackgroundMs,
+  silentReloadAfterPendingMs,
 }: PendingUpdatePromptProps): ReactElement | null {
   const { isUpdatePending, availableUpdate, currentlyRunning } =
     Updates.useUpdates();
@@ -316,8 +343,77 @@ export function PendingUpdatePrompt({
   const hydratedForThisBundle =
     !!updateId && hydratedForId === updateId;
 
+  // Auto-silent path for in-session bundles. When silentReloadAfterPendingMs
+  // is set, schedule a silent reload N ms after isUpdatePending becomes
+  // true (regardless of cause). Catches the cold-start +
+  // checkAutomatically: 'ON_LOAD' fetch case the AppState handler can't
+  // see. The sheet is suppressed entirely while this timer is pending so
+  // the user never sees a "tap OK" prompt — they just get the orange
+  // overlay + reload after N seconds.
+  useEffect(() => {
+    if (!silentReloadAfterPendingMs) return;
+    if (!enabledInDev && __DEV__) return;
+    if (!isUpdatePending || !isDifferent || !hydratedForThisBundle) return;
+    if (dismissedForThisBundle) return;
+
+    const timer = setTimeout(() => {
+      void (async () => {
+        try {
+          // Cooldown — don't auto-reload right after another reload.
+          const reloadedAt = await AsyncStorage.getItem(LAST_RELOAD_AT_KEY);
+          const sinceReload = reloadedAt
+            ? Date.now() - parseInt(reloadedAt, 10)
+            : Infinity;
+          if (sinceReload < RELOAD_COOLDOWN_MS) return;
+
+          setSilentApplying(true);
+          await new Promise((resolve) => setTimeout(resolve, 16));
+          await AsyncStorage.setItem(
+            LAST_RELOAD_AT_KEY,
+            String(Date.now()),
+          ).catch(() => {});
+          analytics?.track(RELEASE_EVENTS.PENDING_UPDATE_APPLIED, {
+            update_id: updateId ?? "",
+            silent: true,
+            source: "pending-delay",
+            delay_ms: silentReloadAfterPendingMs,
+          });
+          try {
+            await analytics?.flush?.();
+          } catch {
+            // Flush failed — still proceed to reload.
+          }
+          await Updates.reloadAsync();
+        } catch {
+          setSilentApplying(false);
+        }
+      })();
+    }, silentReloadAfterPendingMs);
+    return () => clearTimeout(timer);
+  }, [
+    silentReloadAfterPendingMs,
+    enabledInDev,
+    isUpdatePending,
+    isDifferent,
+    hydratedForThisBundle,
+    dismissedForThisBundle,
+    updateId,
+    analytics,
+  ]);
+
+  // Suppress the sheet entirely when the auto-silent timer is armed.
+  // The user shouldn't see "tap OK" while we're about to silent-apply.
+  // If the silent path is disabled (silentReloadAfterPendingMs not set),
+  // this gate is always false → sheet shows as before.
+  const autoSilentArmed =
+    silentReloadAfterPendingMs != null &&
+    isUpdatePending &&
+    isDifferent &&
+    !dismissedForThisBundle;
+
   const visible =
     !silentApplying &&
+    !autoSilentArmed &&
     (enabledInDev || !__DEV__) &&
     isUpdatePending &&
     isDifferent &&
