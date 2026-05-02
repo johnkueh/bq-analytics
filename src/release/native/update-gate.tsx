@@ -38,6 +38,12 @@ export interface UpdateGateProps {
   iosAppId: string;
   /** Android package name. Required for Android routing. */
   androidPackage: string;
+  /** EAS channel name forwarded to `useOpenAppStore` for resolving
+   *  per-channel store URL overrides. Typically
+   *  `Updates.channel || (__DEV__ ? 'development' : 'production')` —
+   *  the consumer reads it because we want to keep this entry free of
+   *  `expo-updates` imports. Defaults to `'production'` if omitted. */
+  channel?: string;
   /**
    * URL to fetch the release config JSON. Required unless the
    * consumer has already called `configureReleaseConfig()` at the
@@ -59,6 +65,7 @@ export function UpdateGate({
   renderHardBlock,
   iosAppId,
   androidPackage,
+  channel,
   apiUrl,
   timeoutMs,
   analytics,
@@ -76,7 +83,7 @@ export function UpdateGate({
 
   const config = useReleaseConfig();
   const verdict = useGateVerdict();
-  const openStore = useOpenAppStore({ iosAppId, androidPackage });
+  const openStore = useOpenAppStore({ iosAppId, androidPackage, channel });
   const reportedRef = useRef(false);
 
   useEffect(() => {

@@ -66,6 +66,12 @@ export interface ReleaseNotesRenderContext {
 export interface ReleaseNotesPromptProps {
   iosAppId: string;
   androidPackage: string;
+  /** EAS channel name forwarded to `useOpenAppStore` for resolving
+   *  per-channel store URL overrides. Typically
+   *  `Updates.channel || (__DEV__ ? 'development' : 'production')` —
+   *  the consumer reads it because we want to keep this entry free of
+   *  `expo-updates` imports. Defaults to `'production'` if omitted. */
+  channel?: string;
   /**
    * Render the consumer's sheet UI. Receives the active context plus
    * `visible` — wire `visible` into the sheet's visibility prop. The
@@ -102,6 +108,7 @@ export interface ReleaseNotesPromptProps {
 export function ReleaseNotesPrompt({
   iosAppId,
   androidPackage,
+  channel,
   render,
   analytics,
   isDark,
@@ -110,7 +117,7 @@ export function ReleaseNotesPrompt({
   const config = useReleaseConfig();
   const target = config.whatsNew;
   const verdict = useGateVerdict();
-  const openStore = useOpenAppStore({ iosAppId, androidPackage });
+  const openStore = useOpenAppStore({ iosAppId, androidPackage, channel });
   const visible = useVisible();
   const sessionRef = useRef<string | null>(null);
 

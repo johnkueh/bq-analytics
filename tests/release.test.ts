@@ -447,6 +447,9 @@ describe("stable constants", () => {
       NOTES_UPDATE_TAPPED: "whats_new.update_tapped",
       NOTES_FEEDBACK_TAPPED: "whats_new.feedback_tapped",
       NOTES_CTA_TAPPED: "whats_new.cta_tapped",
+      PENDING_UPDATE_SHOWN: "pending_update.shown",
+      PENDING_UPDATE_APPLIED: "pending_update.applied",
+      PENDING_UPDATE_DISMISSED: "pending_update.dismissed",
     });
   });
 
@@ -458,5 +461,76 @@ describe("stable constants", () => {
 
   it("RELEASE_KEY is the agreed Edge Config item key", () => {
     expect(RELEASE_KEY).toBe("release");
+  });
+
+  it("PENDING_UPDATE_DISMISSED_KEY_PREFIX matches the cross-bundle dedup contract", async () => {
+    const { PENDING_UPDATE_DISMISSED_KEY_PREFIX } = await import(
+      "../src/release/async-storage-keys.js"
+    );
+    expect(PENDING_UPDATE_DISMISSED_KEY_PREFIX).toBe(
+      "pendingUpdate:dismissed:",
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Module-graph isolation: <PendingUpdatePrompt> imports `expo-updates`,
+// which not every bq-analytics/release/native consumer wants to install.
+// We enforce by source inspection that the main `release/native/index.ts`
+// (and every other file it can transitively reach) doesn't import the
+// pending-update sub-entry. Consumers who DO want OTA opt in by
+// importing from `bq-analytics/release/native/pending-update`.
+// ---------------------------------------------------------------------------
+
+describe("module-graph isolation", () => {
+  it("release/native (excluding pending-update files) does not import expo-updates", async () => {
+    const fs = await import("node:fs/promises");
+    const path = await import("node:path");
+    const dir = path.resolve(__dirname, "../src/release/native");
+    const entries = await fs.readdir(dir);
+    const filesToCheck = entries.filter(
+      (f) =>
+        (f.endsWith(".ts") || f.endsWith(".tsx")) &&
+        !f.startsWith("pending-update"),
+    );
+    expect(filesToCheck.length).toBeGreaterThan(0);
+    for (const file of filesToCheck) {
+      const contents = await fs.readFile(path.join(dir, file), "utf8");
+      expect(contents, `${file} must not import expo-updates`).not.toMatch(
+        /from ["']expo-updates["']/,
+      );
+      expect(contents, `${file} must not require expo-updates`).not.toMatch(
+        /require\(["']expo-updates["']\)/,
+      );
+      // Also catch cross-entry imports: nothing in the main native
+      // surface should re-export from pending-update or its impl file.
+      // Match real import / require / export-from statements only —
+      // comments mentioning "pending-update" by name are fine.
+      expect(
+        contents,
+        `${file} must not import pending-update transitively`,
+      ).not.toMatch(
+        /(?:from|require\(|export\s*\{[^}]*\}\s*from)\s*["'][^"']*pending-update[^"']*["']/,
+      );
+    }
+  });
+
+  it("pending-update sub-entry source exists and re-exports the prompt", async () => {
+    const fs = await import("node:fs/promises");
+    const path = await import("node:path");
+    const subEntry = await fs.readFile(
+      path.resolve(__dirname, "../src/release/native/pending-update.ts"),
+      "utf8",
+    );
+    expect(subEntry).toMatch(/export\s*\{[^}]*PendingUpdatePrompt/);
+    const impl = await fs.readFile(
+      path.resolve(
+        __dirname,
+        "../src/release/native/pending-update-prompt.tsx",
+      ),
+      "utf8",
+    );
+    expect(impl).toMatch(/from ["']expo-updates["']/);
+    expect(impl).toMatch(/export function PendingUpdatePrompt/);
   });
 });

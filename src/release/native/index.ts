@@ -28,6 +28,12 @@ export type {
   ReleaseNotesVerdict,
 } from "./release-notes-prompt.js";
 
+// PendingUpdatePrompt is intentionally NOT re-exported from this entry —
+// it depends on `expo-updates`, and importing it transitively would
+// force every consumer of `bq-analytics/release/native` to install
+// expo-updates even if they don't use OTA. Import it explicitly from
+// `bq-analytics/release/native/pending-update` instead.
+
 export { useReleaseNotes } from "./use-release-notes.js";
 export type {
   UseReleaseNotesOptions,

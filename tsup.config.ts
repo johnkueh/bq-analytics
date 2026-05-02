@@ -21,6 +21,7 @@ export default defineConfig({
     "src/config/http.ts",
     "src/release/index.ts",
     "src/release/native/index.ts",
+    "src/release/native/pending-update.ts",
     "src/handlers/next-release.ts",
   ],
   format: ["esm"],

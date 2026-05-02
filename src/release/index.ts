@@ -33,4 +33,5 @@ export {
   HAS_LAUNCHED_KEY,
   LAST_SEEN_KEY,
   RELEASE_CACHE_KEY,
+  PENDING_UPDATE_DISMISSED_KEY_PREFIX,
 } from "./async-storage-keys.js";

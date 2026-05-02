@@ -18,6 +18,14 @@ export const RELEASE_EVENTS = {
   NOTES_FEEDBACK_TAPPED: "whats_new.feedback_tapped",
   /** User tapped a per-entry CTA inside the release-notes sheet. */
   NOTES_CTA_TAPPED: "whats_new.cta_tapped",
+
+  /** Pending-update sheet appeared (a downloaded OTA is ready to apply
+   *  and the user hasn't dismissed this bundle's per-bundle key yet). */
+  PENDING_UPDATE_SHOWN: "pending_update.shown",
+  /** User tapped the apply CTA — Updates.reloadAsync() is being called. */
+  PENDING_UPDATE_APPLIED: "pending_update.applied",
+  /** User dismissed the pending-update sheet without applying. */
+  PENDING_UPDATE_DISMISSED: "pending_update.dismissed",
 } as const;
 
 export type ReleaseEventName = (typeof RELEASE_EVENTS)[keyof typeof RELEASE_EVENTS];

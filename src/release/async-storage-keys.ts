@@ -18,3 +18,10 @@ export const LAST_SEEN_KEY = "whatsNew:last_seen";
  *  cold-start to render the gate / sheet immediately, then refreshed
  *  in the background. */
 export const RELEASE_CACHE_KEY = "release-config:cached";
+
+/** Per-bundle dismissal key prefix for `<PendingUpdatePrompt>`. The
+ *  full key is `pendingUpdate:dismissed:<updateId>`. Storing per-bundle
+ *  means dismissing one downloaded OTA doesn't suppress the next one
+ *  (each bundle gets its own dismissal decision). */
+export const PENDING_UPDATE_DISMISSED_KEY_PREFIX =
+  "pendingUpdate:dismissed:";
