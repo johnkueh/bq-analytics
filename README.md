@@ -462,11 +462,22 @@ export const GET = createReleaseConfigRoute();
 
 ```tsx
 // app/_layout.tsx (Expo / RN) — headless components, you provide UI via render props
+import * as Updates from "expo-updates";
+import Constants from "expo-constants";
 import { UpdateGate, ReleaseNotesPrompt } from "bq-analytics/release/native";
+// Optional — only import this if you want the auto-summoned "Update ready" sheet.
+// Lives on its own sub-entry so the main `release/native` stays expo-updates-free.
+import { PendingUpdatePrompt } from "bq-analytics/release/native/pending-update";
+
+const channel = Updates.channel || (__DEV__ ? "development" : "production");
+const releaseTag =
+  (Constants.expoConfig?.extra?.releaseTag as string | undefined) ??
+  Constants.expoConfig?.version;
 
 <UpdateGate
   iosAppId="123456789"
   androidPackage="com.example.app"
+  channel={channel}
   renderHardBlock={({ message, openStore }) => (
     <YourForceUpdateScreen message={message} onUpdate={openStore} />
   )}
@@ -475,12 +486,21 @@ import { UpdateGate, ReleaseNotesPrompt } from "bq-analytics/release/native";
   <ReleaseNotesPrompt
     iosAppId="123456789"
     androidPackage="com.example.app"
+    channel={channel}
+    appVersion={releaseTag}
     render={(ctx) => <YourWhatsNewSheet {...ctx} />}
+  />
+  <PendingUpdatePrompt
+    render={(ctx) => <YourUpdateReadySheet {...ctx} />}
   />
 </UpdateGate>
 ```
 
-`ctx` gives the sheet `{notes, verdict, onDismiss, onUpdate, onCtaTap}`. Verdict (`'ok'` | `'soft'`) drives the primary CTA; `'hard'` never reaches the sheet (the gate replaces children).
+`ReleaseNotesPrompt` `ctx` gives the sheet `{notes, verdict, visible, onDismiss, onUpdate, onCtaTap}`. Verdict (`'ok'` | `'soft'`) drives the primary CTA; `'hard'` never reaches the sheet (the gate replaces children). Optional `appVersion` prop suppresses the sheet until the user is on the bundle whose label matches `notes.version` — useful when Edge Config flips notes ahead of expo-updates applying the bundle.
+
+`PendingUpdatePrompt` `ctx` gives the sheet `{updateId, visible, onApply, onDismiss, applying}`. Auto-fires when an OTA bundle is downloaded but not yet applied; per-bundle dismissal stored in AsyncStorage so dismissing one bundle doesn't suppress the next. Skipped in `__DEV__` by default. Bundle discovery is delegated to expo-updates' `checkAutomatically: 'ON_LOAD'` — the prompt deliberately does NOT chain `checkForUpdateAsync` to AppState foreground transitions because that combination cascades through queued bundles (one consumer's post-mortem; the prompt enforces the safe pattern at the package level).
+
+**`channel` prop**: forwarded to the per-channel store-deeplink resolver. Pass `Updates.channel` from expo-updates yourself — bq-analytics deliberately doesn't read it (keeps the main `release/native` entry expo-updates-free). Defaults to `'production'`.
 
 ### Setup (one-time per repo)
 
@@ -534,12 +554,13 @@ Validator is permissive — only `gate` shape is enforced; extra fields pass thr
 
 ```ts
 import { RELEASE_EVENTS } from "bq-analytics/release";
-// "update_gate.shown" | "update_gate.feedback_tapped"
-// "whats_new.shown"   | "whats_new.dismissed" | "whats_new.update_tapped"
+// "update_gate.shown"      | "update_gate.feedback_tapped"
+// "whats_new.shown"        | "whats_new.dismissed" | "whats_new.update_tapped"
 // "whats_new.feedback_tapped" | "whats_new.cta_tapped"
+// "pending_update.shown"   | "pending_update.applied" | "pending_update.dismissed"
 ```
 
-Cohorts slice by the existing `app_version` / `build_number` / `runtime_version` traits on `identify`.
+Cohorts slice by the existing `app_version` / `build_number` / `runtime_version` traits on `identify`. The pending-update events carry `update_id` in properties so you can correlate apply rate per OTA bundle.
 
 ## Architecture
 

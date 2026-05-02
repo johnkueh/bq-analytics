@@ -90,20 +90,33 @@ The handler reads from Edge Config, validates with `isReleaseConfig` (permissive
 
 ## Step 4 — Wire the client (Expo / React Native)
 
-Two headless components mount at the app root. Consumer provides UI via render props.
+Headless components mount at the app root. Consumer provides UI via render props.
 
 ```tsx
 // app/src/app/_layout.tsx (or your root component)
+import * as Updates from "expo-updates";
+import Constants from "expo-constants";
 import { UpdateGate, ReleaseNotesPrompt } from "bq-analytics/release/native";
+// Optional: only if you want the auto-summoned "Update ready" sheet for OTAs.
+// Lives on its own sub-entry so the main `release/native` stays expo-updates-free.
+import { PendingUpdatePrompt } from "bq-analytics/release/native/pending-update";
 import { ForceUpdateScreen } from "@/components/ForceUpdateScreen";
 import { WhatsNewSheet } from "@/components/WhatsNewSheet";
+import { PendingUpdateSheet } from "@/components/PendingUpdateSheet";
 
 const IOS_APP_ID = "<your App Store Connect ID>";
 const ANDROID_PACKAGE = "<your.package.name>";
 
+// Read these once, forward to every component that needs them.
+const channel = Updates.channel || (__DEV__ ? "development" : "production");
+const releaseTag =
+  (Constants.expoConfig?.extra?.releaseTag as string | undefined) ??
+  Constants.expoConfig?.version;
+
 <UpdateGate
   iosAppId={IOS_APP_ID}
   androidPackage={ANDROID_PACKAGE}
+  channel={channel}
   renderHardBlock={({ message, openStore }) => (
     <ForceUpdateScreen message={message} onUpdate={openStore} />
   )}
@@ -112,12 +125,28 @@ const ANDROID_PACKAGE = "<your.package.name>";
   <ReleaseNotesPrompt
     iosAppId={IOS_APP_ID}
     androidPackage={ANDROID_PACKAGE}
+    channel={channel}
+    appVersion={releaseTag}
     render={(ctx) => <WhatsNewSheet {...ctx} />}
+  />
+  <PendingUpdatePrompt
+    render={(ctx) => <PendingUpdateSheet {...ctx} />}
   />
 </UpdateGate>
 ```
 
-The `WhatsNewSheet` you write is pure presentation — `ctx` gives it `{notes, verdict, onDismiss, onUpdate, onCtaTap}`. Verdict drives the primary CTA: `'ok'` → "Got it", `'soft'` → "Update in App Store" + "Later".
+`WhatsNewSheet` `ctx` = `{notes, verdict, visible, onDismiss, onUpdate, onCtaTap}`. Verdict drives the primary CTA: `'ok'` → "Got it", `'soft'` → "Update in App Store" + "Later".
+
+`PendingUpdateSheet` `ctx` = `{updateId, visible, onApply, onDismiss, applying}`. Auto-fires when `Updates.useUpdates().isUpdatePending` && `availableUpdate.updateId !== currentlyRunning.updateId` && the bundle hasn't been dismissed via the per-bundle key (`pendingUpdate:dismissed:<updateId>` in AsyncStorage). Tap-to-apply gates on a deliberate user action — no auto-reload, no AppState foreground polling (both are anti-patterns at the consumer level; the prompt enforces them at the package level).
+
+### Why two props (`appVersion` and `channel`)?
+
+- `appVersion` is the WhatsNewSheet gate key. When set, the sheet stays suppressed until the user is on a bundle whose label matches `notes.version` — solves the OTA race where Edge Config flips notes ahead of expo-updates applying the matching bundle. Pass `Constants.expoConfig?.extra?.releaseTag` (or `Constants.expoConfig?.version` if you don't separate release labeling from the App Store version).
+- `channel` is the per-channel store-deeplink key (e.g. preview goes to TestFlight, production to App Store). Pass `Updates.channel || (__DEV__ ? 'development' : 'production')`. The package deliberately doesn't read `Updates.channel` itself — keeps the main `release/native` entry expo-updates-free for consumers who don't ship OTA.
+
+### Why is `PendingUpdatePrompt` on a separate sub-entry?
+
+It depends on `expo-updates` (for `useUpdates()` + `reloadAsync()`). Importing it from the main `release/native` would force every consumer of that entry to install expo-updates even if they only use the gate / notes UI. The sub-entry pattern means OTA dependence is opt-in by import path, not assumed.
 
 ### Manual re-access
 
@@ -141,8 +170,10 @@ Event names exported as constants — never hand-type them; cross-app dashboards
 
 ```ts
 import { RELEASE_EVENTS } from "bq-analytics/release";
-// "update_gate.shown" | "update_gate.feedback_tapped"
-// "whats_new.shown" | "whats_new.dismissed" | "whats_new.update_tapped"
+// "update_gate.shown"      | "update_gate.feedback_tapped"
+// "whats_new.shown"        | "whats_new.dismissed" | "whats_new.update_tapped"
+// "pending_update.shown"   | "pending_update.applied" | "pending_update.dismissed"
+//                            (carry update_id in properties for per-bundle apply rate)
 // "whats_new.feedback_tapped" | "whats_new.cta_tapped"
 ```
 
