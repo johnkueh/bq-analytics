@@ -9,6 +9,13 @@
 //   - 'soft' (user below soft gate) → session-only (re-fires every
 //     cold-start so the nudge keeps reminding until they update).
 //
+// Bundle-version gating (optional `appVersion` prop): when supplied,
+// suppresses the sheet until `appVersion === notes.version`. Solves
+// the OTA race where Edge Config flips notes ahead of expo-updates
+// applying the matching bundle — without this, users read about
+// features they don't yet have. Only applies in 'ok' verdict; 'soft'
+// always shows so the nudge can describe what they're missing.
+//
 // Fresh-install probe: distinguishes a *true* fresh install (suppress;
 // new users shouldn't see release notes for features they've never not
 // had) from an *upgrade from pre-feature code* (existing user, other
@@ -72,6 +79,24 @@ export interface ReleaseNotesPromptProps {
   analytics?: Analytics;
   /** Theme hint for the in-app Safari View Controller. */
   isDark?: boolean;
+  /**
+   * The version of the app the user is *currently running* — typically
+   * `Constants.expoConfig?.version` from `expo-constants`. When supplied,
+   * the sheet is suppressed until this matches `notes.version`.
+   *
+   * Why: Edge Config can flip the published `whatsNew.version` ahead of
+   * the matching OTA bundle being applied (expo-updates' default flow
+   * caches the new bundle and applies it on next cold-start). Without
+   * this gate the user reads "What's new in 1.0.2" while still on the
+   * 1.0.1 bundle — the listed features may not exist yet.
+   *
+   * Only applies in `'ok'` verdict. `'soft'` always shows because the
+   * point of soft-gate notes is to describe what they're missing.
+   *
+   * Omit (or pass undefined) to keep the legacy behavior — sheet shows
+   * as soon as `notes.version !== LAST_SEEN_KEY`.
+   */
+  appVersion?: string;
 }
 
 export function ReleaseNotesPrompt({
@@ -80,6 +105,7 @@ export function ReleaseNotesPrompt({
   render,
   analytics,
   isDark,
+  appVersion,
 }: ReleaseNotesPromptProps): ReactElement | null {
   const config = useReleaseConfig();
   const target = config.whatsNew;
@@ -124,6 +150,19 @@ export function ReleaseNotesPrompt({
       // cold-start. __DEV__ skips dedup either way for smoke-testing.
       if (!__DEV__ && verdict === "ok" && target.version === seen) return;
 
+      // Bundle-version gate (opt-in via appVersion prop). Only enforced
+      // in 'ok' verdict — 'soft' is meant to describe upcoming features
+      // for users who haven't updated yet, so we don't gate it. Skipped
+      // in __DEV__ to keep smoke testing simple.
+      if (
+        !__DEV__ &&
+        verdict === "ok" &&
+        appVersion &&
+        appVersion !== target.version
+      ) {
+        return;
+      }
+
       setVisibleSingleton(true);
       analytics?.track(RELEASE_EVENTS.NOTES_SHOWN, {
         version: target.version,
@@ -135,7 +174,7 @@ export function ReleaseNotesPrompt({
     return () => {
       cancelled = true;
     };
-  }, [target, verdict, analytics]);
+  }, [target, verdict, analytics, appVersion]);
 
   if (!target || verdict === "hard") return null;
 
