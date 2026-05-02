@@ -234,6 +234,22 @@ export function PendingUpdatePrompt({
             silent: true,
             bg_duration_ms: bgDuration,
           });
+          // Drain the analytics buffer before reloadAsync — the reload
+          // tears down the JS context immediately, and the SDK's
+          // batched-flush would otherwise lose this event (and any
+          // earlier queued events from this session). Verified by
+          // recipes.im BQ on 2026-05-02: pending_update.applied with
+          // silent:true never reached BQ pre-fix.
+          //
+          // Best-effort: if the SDK doesn't expose flush() (custom
+          // shape) or it rejects (network), still proceed with reload.
+          // The cost of a lost analytic is much smaller than blocking
+          // the reload for the user.
+          try {
+            await analytics?.flush?.();
+          } catch {
+            // Analytics flush failed — proceed with reload anyway.
+          }
           await Updates.reloadAsync();
         } catch {
           // Network / not-signed-in / no-update / etc — silent. The
@@ -357,6 +373,14 @@ export function PendingUpdatePrompt({
       await AsyncStorage.setItem(LAST_RELOAD_AT_KEY, String(Date.now())).catch(
         () => {},
       );
+      // Drain the analytics buffer before reload — see the silent-path
+      // comment for why. Without this the .applied event for a manual
+      // tap is lost the same way silent.applied was. Best-effort.
+      try {
+        await analytics?.flush?.();
+      } catch {
+        // Analytics flush failed — proceed with reload anyway.
+      }
       try {
         await Updates.reloadAsync();
       } catch {
