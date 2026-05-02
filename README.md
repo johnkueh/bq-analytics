@@ -492,13 +492,18 @@ const releaseTag =
   />
   <PendingUpdatePrompt
     render={(ctx) => <YourUpdateReadySheet {...ctx} />}
+    silentReloadAfterBackgroundMs={120_000}
   />
 </UpdateGate>
 ```
 
 `ReleaseNotesPrompt` `ctx` gives the sheet `{notes, verdict, visible, onDismiss, onUpdate, onCtaTap}`. Verdict (`'ok'` | `'soft'`) drives the primary CTA; `'hard'` never reaches the sheet (the gate replaces children). Optional `appVersion` prop suppresses the sheet until the user is on the bundle whose label matches `notes.version` — useful when Edge Config flips notes ahead of expo-updates applying the bundle.
 
-`PendingUpdatePrompt` `ctx` gives the sheet `{updateId, visible, onApply, onDismiss, applying}`. Auto-fires when an OTA bundle is downloaded but not yet applied; per-bundle dismissal stored in AsyncStorage so dismissing one bundle doesn't suppress the next. Skipped in `__DEV__` by default. Bundle discovery is delegated to expo-updates' `checkAutomatically: 'ON_LOAD'` — the prompt deliberately does NOT chain `checkForUpdateAsync` to AppState foreground transitions because that combination cascades through queued bundles (one consumer's post-mortem; the prompt enforces the safe pattern at the package level).
+`PendingUpdatePrompt` `ctx` gives the sheet `{updateId, visible, onApply, onDismiss, applying}`. Auto-fires when an OTA bundle is downloaded but not yet applied; per-bundle dismissal stored in AsyncStorage so dismissing one bundle doesn't suppress the next. Skipped in `__DEV__` by default.
+
+**Bundle discovery options:**
+- Default: cold-start only via expo-updates' `checkAutomatically: 'ON_LOAD'`. Conservative — never interrupts foreground sessions but slow propagation.
+- `silentReloadAfterBackgroundMs={120_000}`: when the app returns from a background ≥ 2 min, silently `checkForUpdateAsync + fetchUpdateAsync + reloadAsync`. User perceives the return as a fresh open (visually identical to cold-start) and lands on the new bundle. Active foreground sessions are never interrupted — by definition this only fires when the user has been gone long enough that they're starting a new session, not continuing an old one. Cascade-safe via a 60s `lastReloadedAt` cooldown so reload-induced AppState churn doesn't loop. Per the [Expo docs recommendation](https://docs.expo.dev/eas-update/download-updates/) for long-idle silent reload.
 
 **`channel` prop**: forwarded to the per-channel store-deeplink resolver. Pass `Updates.channel` from expo-updates yourself — bq-analytics deliberately doesn't read it (keeps the main `release/native` entry expo-updates-free). Defaults to `'production'`.
 
