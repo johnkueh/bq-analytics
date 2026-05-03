@@ -225,17 +225,24 @@ export interface LogDrainRouteOptions {
  * });
  * ```
  *
- * **Run on Edge runtime to avoid the drain self-loop.** Vercel's `lambda`
- * source emits START / END / REPORT log lines for every function invocation
- * — including this handler's own invocations. Those lines get shipped back
- * to the drain → re-emitted → shipped again. At recipes.im scale we observed
- * 96–98% of all `logs.raw` rows being the drain logging itself (~440k/day).
+ * **Self-loop is filtered automatically.** Every Vercel runtime emits a log
+ * event per function invocation — `lambda` emits START / END / REPORT lines,
+ * `edge` emits one `edge-function-invocation` event — which then get shipped
+ * to this drain → re-emitted → shipped again. Pre-fix at recipes.im we
+ * observed 96–98% of `logs.raw` being the drain logging itself (~440k/day).
  *
- * Vercel's `edge` source does NOT emit START/END/REPORT (per
- * https://vercel.com/docs/drains/reference/logs#log-sources), so flipping
- * the runtime to `edge` breaks the loop at the source — no Vercel dashboard
- * config needed. The drain handler uses only fetch / Web APIs so it runs
- * cleanly on Edge.
+ * The handler now drops any drain row whose `path` matches its own URL
+ * (auto-detected from `req.url`), breaking the recursive write at the
+ * INGEST layer. Returns `{ ok, accepted, dropped }` so consumers can see
+ * the suppression count.
+ *
+ * **Edge runtime is also recommended** for two further wins:
+ *   1. Edge log events are smaller (one line vs four) — less BQ row size.
+ *   2. Edge billing is meaningfully cheaper per invocation than lambda
+ *      Active CPU.
+ * The drain handler uses only fetch / Web APIs so it runs cleanly on Edge.
+ * Per Vercel's drain log-source docs:
+ * https://vercel.com/docs/drains/reference/logs#log-sources
  *
  * Auth: Vercel OIDC (`@vercel/functions/oidc`) is the production auth path
  * and works on Edge. Service-account-JSON and ADC fallback paths in `auth.ts`
@@ -282,7 +289,29 @@ export function createLogDrainRoute(opts: LogDrainRouteOptions) {
     const lines = text.trim().split("\n").filter(Boolean);
     if (lines.length === 0) return stamp(json({ ok: true, accepted: 0 }));
 
-    const rows = lines.map((line) => parseDrainLine(line));
+    // Self-loop filter: drop drain rows whose path matches this handler's
+    // own URL. Vercel emits a log event for every invocation regardless of
+    // runtime (lambda emits START/END/REPORT; edge emits one
+    // edge-function-invocation event), and those events get shipped right
+    // back to this handler — recursive write loop. Filtering at INGEST
+    // breaks the loop without needing Vercel-side path-exclusion config
+    // (which doesn't exist as of 2026-05). Auto-detected from req.url so
+    // the consumer doesn't have to plumb their own path through.
+    const ownPath = (() => {
+      try {
+        return new URL(req.url).pathname;
+      } catch {
+        return null;
+      }
+    })();
+    const rows = lines
+      .map((line) => parseDrainLine(line))
+      .filter((r) => !ownPath || r.path !== ownPath);
+    const dropped = lines.length - rows.length;
+
+    if (rows.length === 0) {
+      return stamp(json({ ok: true, accepted: 0, dropped }));
+    }
 
     try {
       const { insertRows } = await import("../insert.js");
@@ -290,7 +319,7 @@ export function createLogDrainRoute(opts: LogDrainRouteOptions) {
     } catch (err) {
       return stamp(json({ error: "insert failed", detail: (err as Error).message }, 502));
     }
-    return stamp(json({ ok: true, accepted: rows.length }));
+    return stamp(json({ ok: true, accepted: rows.length, dropped }));
   }
 
   function GET(req: Request): Response {

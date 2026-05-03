@@ -279,6 +279,29 @@ describe("createLogDrainRoute", () => {
     expect(res.headers.get("x-vercel-verify")).toBe("team-token-xyz");
   });
 
+  it("POST drops all rows when every line is self-loop (skips insert entirely)", async () => {
+    const { POST } = createLogDrainRoute({
+      projectId: "fake-but-never-reached",
+      secret: "right",
+    });
+    const selfLine = JSON.stringify({
+      timestamp: 1714300000000,
+      message: "[POST] /api/internal/log-drain status=200",
+      proxy: { path: "/api/internal/log-drain", statusCode: 200 },
+    });
+    const res = await POST(
+      new Request("http://x/api/internal/log-drain", {
+        method: "POST",
+        headers: { "x-drain-secret": "right" },
+        body: `${selfLine}\n${selfLine}\n${selfLine}`,
+      }),
+    );
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.accepted).toBe(0);
+    expect(body.dropped).toBe(3);
+  });
+
   it("POST 200 response also carries x-vercel-verify", async () => {
     const { POST } = createLogDrainRoute({
       projectId: "p",
