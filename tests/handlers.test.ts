@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { createTrackRoute, createLogDrainRoute, parseDrainLine } from "../src/handlers/next.js";
+import {
+  createTrackRoute,
+  createLogDrainRoute,
+  cachedResolver,
+  parseDrainLine,
+} from "../src/handlers/next.js";
 import type { BufferedRecord } from "../src/types.js";
 
 function recordingTransport() {
@@ -289,6 +294,105 @@ describe("createLogDrainRoute", () => {
     );
     expect(res.status).toBe(200);
     expect(res.headers.get("x-vercel-verify")).toBe("team-token-xyz");
+  });
+});
+
+describe("cachedResolver", () => {
+  it("calls resolve once for the same key", async () => {
+    let calls = 0;
+    const resolve = cachedResolver(
+      (req) => req.headers.get("authorization"),
+      async (token: string) => {
+        calls++;
+        return `user-${token}`;
+      },
+    );
+    const req = new Request("http://x", { headers: { authorization: "tok-1" } });
+    const a = await resolve(req);
+    const b = await resolve(req);
+    const c = await resolve(req);
+    expect(a).toBe("user-tok-1");
+    expect(b).toBe("user-tok-1");
+    expect(c).toBe("user-tok-1");
+    expect(calls).toBe(1);
+  });
+
+  it("calls resolve again for a different key", async () => {
+    let calls = 0;
+    const resolve = cachedResolver(
+      (req) => req.headers.get("authorization"),
+      async (token: string) => {
+        calls++;
+        return token;
+      },
+    );
+    await resolve(new Request("http://x", { headers: { authorization: "a" } }));
+    await resolve(new Request("http://x", { headers: { authorization: "b" } }));
+    await resolve(new Request("http://x", { headers: { authorization: "a" } }));
+    expect(calls).toBe(2);
+  });
+
+  it("returns null without calling resolve when key extractor returns null", async () => {
+    let calls = 0;
+    const resolve = cachedResolver(
+      () => null,
+      async () => {
+        calls++;
+        return "never";
+      },
+    );
+    const r = await resolve(new Request("http://x"));
+    expect(r).toBeNull();
+    expect(calls).toBe(0);
+  });
+
+  it("caches null results too (negative cache)", async () => {
+    let calls = 0;
+    const resolve = cachedResolver(
+      (req) => req.headers.get("authorization"),
+      async () => {
+        calls++;
+        return null;
+      },
+    );
+    const req = new Request("http://x", { headers: { authorization: "missing" } });
+    await resolve(req);
+    await resolve(req);
+    expect(calls).toBe(1);
+  });
+
+  it("respects ttlMs", async () => {
+    let calls = 0;
+    const resolve = cachedResolver(
+      (req) => req.headers.get("authorization"),
+      async (t: string) => {
+        calls++;
+        return t;
+      },
+      { ttlMs: 5 },
+    );
+    const req = new Request("http://x", { headers: { authorization: "t" } });
+    await resolve(req);
+    await new Promise((r) => setTimeout(r, 15));
+    await resolve(req);
+    expect(calls).toBe(2);
+  });
+
+  it("evicts oldest entry when maxEntries hit (FIFO)", async () => {
+    let calls = 0;
+    const resolve = cachedResolver(
+      (req) => req.headers.get("authorization"),
+      async (t: string) => {
+        calls++;
+        return t;
+      },
+      { maxEntries: 2 },
+    );
+    await resolve(new Request("http://x", { headers: { authorization: "a" } }));
+    await resolve(new Request("http://x", { headers: { authorization: "b" } }));
+    await resolve(new Request("http://x", { headers: { authorization: "c" } })); // evicts a
+    await resolve(new Request("http://x", { headers: { authorization: "a" } })); // miss again
+    expect(calls).toBe(4);
   });
 });
 

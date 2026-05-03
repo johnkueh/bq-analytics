@@ -1,6 +1,11 @@
 import type { BqTransportConfig } from "../index.js";
-import { bqTransport } from "../index.js";
-import type { BufferedRecord } from "../types.js";
+import type { BufferedRecord, Transport } from "../types.js";
+
+// `bqTransport` is loaded dynamically inside `createTrackRoute` so this file
+// stays Edge-bundler-safe for consumers that only use `createLogDrainRoute`
+// — the static chain `next.ts → index.ts → auth.ts` would otherwise drag
+// node:* imports into the Edge bundle even when they're never reached at
+// runtime.
 
 export interface TrackRouteOptions extends BqTransportConfig {
   /**
@@ -61,7 +66,17 @@ export interface TrackRouteOptions extends BqTransportConfig {
  * - Without `waitUntil`: blocks until BQ confirms; returns 502 on failure.
  */
 export function createTrackRoute(opts: TrackRouteOptions) {
-  const transport = bqTransport(opts);
+  // Lazy-load bqTransport so consumers that import this file purely for
+  // `createLogDrainRoute` (typically on Edge runtime) don't pay the static
+  // `node:*` import chain via index.ts → auth.ts. First POST resolves it
+  // once and caches the promise.
+  let transportPromise: Promise<Transport> | null = null;
+  const getTransport = (): Promise<Transport> => {
+    if (!transportPromise) {
+      transportPromise = import("../index.js").then((m) => m.bqTransport(opts));
+    }
+    return transportPromise;
+  };
 
   return async function POST(req: Request): Promise<Response> {
     if (opts.apiKey && req.headers.get("x-api-key") === opts.apiKey) {
@@ -96,11 +111,13 @@ export function createTrackRoute(opts: TrackRouteOptions) {
     if (opts.waitUntil) {
       // Fast path: dispatch BQ insert in background, return 200 immediately.
       opts.waitUntil(
-        transport.send(cleaned).catch((err) => {
-          // Don't throw — caller already got 200. Log so the failure is
-          // captured by the drain pipeline (logs.raw) for diagnosis.
-          console.error("[bq-analytics] /api/track insert failed:", err);
-        }),
+        getTransport()
+          .then((transport) => transport.send(cleaned))
+          .catch((err) => {
+            // Don't throw — caller already got 200. Log so the failure is
+            // captured by the drain pipeline (logs.raw) for diagnosis.
+            console.error("[bq-analytics] /api/track insert failed:", err);
+          }),
       );
       return json({ ok: true, accepted: cleaned.length });
     }
@@ -108,12 +125,69 @@ export function createTrackRoute(opts: TrackRouteOptions) {
     // Blocking path: await BQ confirm, surface 502 on failure so client
     // SDK retry queues kick in.
     try {
+      const transport = await getTransport();
       await transport.send(cleaned);
     } catch (err) {
       return json({ error: "insert failed", detail: (err as Error).message }, 502);
     }
 
     return json({ ok: true, accepted: cleaned.length });
+  };
+}
+
+/**
+ * Wrap a `resolveUser` function with a process-global Map cache so repeat
+ * lookups of the same auth token (or other key) skip the underlying DB hit.
+ *
+ * Designed for the common shape: hash an auth header → DB SELECT to map it
+ * to a stable user/device id. Without caching, every analytics POST pays the
+ * round-trip; on Vercel Active CPU pricing that adds up fast.
+ *
+ * **Safe defaults:** TTL-less cache (mappings are typically write-once —
+ * tokens don't rotate to point at different users mid-session). Cache key
+ * comes from the `key` extractor you supply (e.g. the bearer token, or its
+ * hash). If you DO rotate tokens, pass `ttlMs` to bound staleness.
+ *
+ * Per-Lambda-instance only — this is in-memory, not Edge Config / KV. Cold
+ * starts pay the first lookup; warm instances are free.
+ *
+ * ```ts
+ * const resolveUser = cachedResolver(
+ *   (req) => req.headers.get("authorization")?.slice(7), // bearer token
+ *   async (token) => {
+ *     const row = await db.execute({ sql: "SELECT id FROM devices WHERE token = ?", args: [token] });
+ *     return row.rows[0]?.id ?? null;
+ *   },
+ * );
+ * export const POST = createTrackRoute({ projectId, resolveUser });
+ * ```
+ */
+export function cachedResolver<TKey extends string>(
+  key: (req: Request) => TKey | null | undefined,
+  resolve: (key: TKey) => Promise<string | null> | string | null,
+  opts: { ttlMs?: number; maxEntries?: number } = {},
+): (req: Request) => Promise<string | null> {
+  const cache = new Map<TKey, { value: string | null; expiresAt: number }>();
+  const ttlMs = opts.ttlMs ?? Number.POSITIVE_INFINITY;
+  const maxEntries = opts.maxEntries ?? 10_000;
+
+  return async function resolveUserCached(req: Request): Promise<string | null> {
+    const k = key(req);
+    if (k == null) return null;
+
+    const now = Date.now();
+    const hit = cache.get(k);
+    if (hit && hit.expiresAt > now) return hit.value;
+
+    const value = await resolve(k);
+    // Cap memory by evicting the oldest entry on overflow. Map iteration
+    // order is insertion order, so .keys().next() is the FIFO head.
+    if (cache.size >= maxEntries) {
+      const oldest = cache.keys().next().value;
+      if (oldest !== undefined) cache.delete(oldest);
+    }
+    cache.set(k, { value, expiresAt: now + ttlMs });
+    return value;
   };
 }
 
@@ -144,10 +218,30 @@ export interface LogDrainRouteOptions {
  * Returns `{ POST, GET }` — both must be exported from your route file:
  *
  * ```ts
+ * // src/app/api/internal/log-drain/route.ts
+ * export const runtime = 'edge'; // strongly recommended — see below
  * export const { POST, GET } = createLogDrainRoute({
  *   projectId, secret: process.env.LOG_DRAIN_SECRET!,
  * });
  * ```
+ *
+ * **Run on Edge runtime to avoid the drain self-loop.** Vercel's `lambda`
+ * source emits START / END / REPORT log lines for every function invocation
+ * — including this handler's own invocations. Those lines get shipped back
+ * to the drain → re-emitted → shipped again. At recipes.im scale we observed
+ * 96–98% of all `logs.raw` rows being the drain logging itself (~440k/day).
+ *
+ * Vercel's `edge` source does NOT emit START/END/REPORT (per
+ * https://vercel.com/docs/drains/reference/logs#log-sources), so flipping
+ * the runtime to `edge` breaks the loop at the source — no Vercel dashboard
+ * config needed. The drain handler uses only fetch / Web APIs so it runs
+ * cleanly on Edge.
+ *
+ * Auth: Vercel OIDC (`@vercel/functions/oidc`) is the production auth path
+ * and works on Edge. Service-account-JSON and ADC fallback paths in `auth.ts`
+ * are Node-only — Edge consumers should rely on OIDC (the `bq-analytics`
+ * setup script configures this by default) or the `BQA_ACCESS_TOKEN` env
+ * override.
  *
  * - `POST` accepts NDJSON drain batches and writes them into <logsDataset>.raw.
  * - `GET` echoes back `x-vercel-verify` so Vercel's drain-creation endpoint
@@ -161,7 +255,9 @@ export interface LogDrainRouteOptions {
  * latency (~50–150ms) is well within Vercel's drain delivery timeout.
  *
  * IMPORTANT: never call console.log inside POST — drained log lines are
- * themselves drained, creating an infinite loop.
+ * themselves drained, creating an infinite loop. (On Edge runtime, even
+ * `console.*` output is emitted as drain events, so this rule still
+ * applies.)
  */
 export function createLogDrainRoute(opts: LogDrainRouteOptions) {
   const dataset = opts.logsDataset ?? "logs";

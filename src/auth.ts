@@ -1,12 +1,14 @@
-// Server-only auth chain for BigQuery API access. This file is reachable only
-// from `./index.ts` (the server entry); RN/browser bundles route through
-// `./index.rn.ts` via package.json's `react-native` / `browser` export
-// conditions and never see these imports. Static imports here are therefore
-// safe — Vercel's bundler will keep `@vercel/functions/oidc` and `node:*`
-// modules in the deployed function.
-
-import { createSign } from "node:crypto";
-import { execSync } from "node:child_process";
+// Server-only auth chain for BigQuery API access. RN/browser bundles route
+// through `./index.rn.ts` via package.json's `react-native` / `browser` export
+// conditions and never see this file. Vercel Edge runtime DOES reach this
+// file (no `edge` export condition exists), so `node:crypto` and
+// `node:child_process` are imported dynamically inside the functions that use
+// them — that way the static module graph is Edge-bundler-safe even though
+// service-account-JSON and ADC fallback paths are Node-only at runtime.
+//
+// The Vercel OIDC code path uses pure fetch / Web APIs and works on both
+// Node and Edge runtimes, so consumers running on Edge are fine as long as
+// they have OIDC configured (default for `bq-analytics` setup script).
 
 interface CachedToken {
   token: string;
@@ -116,6 +118,11 @@ async function exchangeVercelOidc(oidcToken: string, scope: string): Promise<Cac
 }
 
 async function fromServiceAccountJson(json: string, scope: string): Promise<CachedToken> {
+  // RSA-SHA256 signing requires Node's createSign — Web Crypto can do RSA
+  // signing too but the API shape differs. Lazy import keeps this file
+  // Edge-bundler-safe; Edge consumers should use OIDC (the path above), not
+  // service-account JSON.
+  const { createSign } = await import("node:crypto");
   const creds = JSON.parse(json) as { client_email: string; private_key: string };
   const now = Math.floor(Date.now() / 1000);
   const claims = {
@@ -147,7 +154,11 @@ async function fromServiceAccountJson(json: string, scope: string): Promise<Cach
 }
 
 async function fromAdc(scope: string): Promise<CachedToken> {
+  // Local-dev-only fallback. Lazy import because `node:child_process` is
+  // unavailable on Vercel Edge runtime — production consumers should use
+  // OIDC (configured by the bq-analytics setup script).
   try {
+    const { execSync } = await import("node:child_process");
     const token = execSync(
       `gcloud auth application-default print-access-token --scopes=${scope}`,
       { encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"] },

@@ -98,17 +98,31 @@ The bundled [`claude-skills/query/SKILL.md`](claude-skills/query) gives agents p
 
 ```ts
 // src/app/api/track/route.ts
-import { createTrackRoute } from "bq-analytics/next";
+import { createTrackRoute, cachedResolver } from "bq-analytics/next";
 export const POST = createTrackRoute({
   projectId: process.env.GCP_PROJECT_ID!,
-  resolveUser: async (req) => /* your auth lookup */ null,
+  // Caching is strongly recommended — every analytics POST otherwise pays
+  // a DB round-trip to map the auth token to a user id. See "resolveUser
+  // caching" below for why this matters.
+  resolveUser: cachedResolver(
+    (req) => req.headers.get("authorization")?.slice(7),
+    async (token) => /* your DB lookup */ null,
+  ),
 });
 
 // src/app/api/internal/log-drain/route.ts
+//
+// Edge runtime is strongly recommended — Vercel's `lambda` source emits
+// START / END / REPORT lines for every function call, which the drain
+// then ships back to itself. `edge` runtime does not emit those lines, so
+// the loop dies at the source. See `createLogDrainRoute` JSDoc.
+export const runtime = "edge";
+
 import { createLogDrainRoute } from "bq-analytics/next";
-export const POST = createLogDrainRoute({
+export const { POST, GET } = createLogDrainRoute({
   projectId: process.env.GCP_PROJECT_ID!,
   secret: process.env.LOG_DRAIN_SECRET!,
+  vercelVerifyToken: process.env.VERCEL_VERIFY_TOKEN,
 });
 
 // src/lib/analytics.ts — server singleton
