@@ -5,6 +5,22 @@ description: Query bq-analytics data in BigQuery via the bq CLI. Use when the us
 
 # Querying bq-analytics
 
+## If `bq` isn't on PATH
+
+The skill assumes the gcloud BigQuery CLI is callable as `bq`. On macOS with Homebrew (`brew install gcloud-cli`), the binaries land in `/opt/homebrew/share/google-cloud-sdk/bin/` and are **not symlinked into `/opt/homebrew/bin/`**, so non-interactive shells (the ones tools like Claude Code spawn) won't find them — even when an interactive `which bq` works.
+
+If a `bq` invocation fails with `command not found`, run one of:
+
+```sh
+# Option A — make it visible to non-interactive shells (loaded before .zshrc):
+echo 'export PATH="/opt/homebrew/share/google-cloud-sdk/bin:$PATH"' >> ~/.zshenv
+
+# Option B — symlink directly into a dir that's already on the system PATH:
+ln -s /opt/homebrew/share/google-cloud-sdk/bin/{bq,gcloud,gsutil} /opt/homebrew/bin/
+```
+
+The PATH entry that lives in `~/.zshrc` only helps interactive shells — `~/.zshenv` is the right file for tooling. After either fix, plain `bq query …` calls below work as written.
+
 ## Tables you can rely on
 
 ```
