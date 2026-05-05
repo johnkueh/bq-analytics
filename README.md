@@ -220,7 +220,7 @@ attachAppStateFlush(a, AppState, () => ({ userId: currentUserId }));
 a.track("import.started", { source: "instagram" }, { userId: currentUserId });
 ```
 
-**Recommended `identify()` traits for Expo apps** — include `platform`, `app_version`, `build_number`, `ota_update_id`, `ota_channel`, `runtime_version`. The `ota_update_id` is the only honest answer to "but I OTA'd!". `events.users` is last-write-wins, so the next OTA's `identify` updates the row in place.
+**Recommended `identify()` traits for Expo apps** — include `platform`, `app_version`, `build_number`, `ota_update_id`, `ota_channel`, `runtime_version`. The `ota_update_id` is the only honest answer to "but I OTA'd!". `events.users` merges traits per-key with latest-write-wins, so the next OTA's `identify({ota_update_id: ...})` updates only the keys you pass and leaves the rest untouched. Calling `identify(userId, {})` is safe — empty traits never wipe existing keys; same for `group(type, id, {}, userId)` when the intent is membership only.
 
 </details>
 
@@ -294,8 +294,8 @@ events.identifies    ts, user_id, traits JSON
 events.groups        ts, group_type, group_id, traits JSON
 events.user_groups   ts, user_id, group_type, group_id
 
-events.users               ── view: latest traits per user_id
-events.groups_current      ── view: latest traits per (group_type, group_id)
+events.users               ── view: per-key merged traits per user_id (latest value per key wins)
+events.groups_current      ── view: per-key merged traits per (group_type, group_id) (latest value per key wins)
 events.user_groups_current ── view: most-recent group per user/type
 
 events.feedback      feedback_id, ts, kind, subject, message, severity, url,

@@ -64,23 +64,90 @@ PARTITION BY DATE(ts)
 CLUSTER BY kind, user_id
 OPTIONS(description="Product feedback intake — bug reports, feature requests, general feedback. Joinable with events.users / events.raw on user_id for full context.");
 
--- Materialized "current state" views
+-- Materialized "current state" views.
+--
+-- Trait merge semantics: latest-write-wins **per key**, not per row.
+-- A partial write like `identify(u, {plan: "pro"})` does not clobber
+-- previously-set keys (e.g. `email`); only the keys present in the new
+-- write are updated. An empty `{}` write contributes nothing — it does
+-- not erase existing traits. This matches Segment/PostHog/Mixpanel and
+-- the typical caller mental model: SDKs that overload `group()` /
+-- `identify()` for membership and trait writes (where membership is
+-- the only intent) should not silently wipe traits.
+--
+-- Implementation: explode each row's top-level JSON keys, take the
+-- latest value per key, rebuild the JSON object. Groups/users with
+-- only empty `{}` writes still appear with `traits = {}`.
+
+-- BQ JSON path arguments must be constants, so per-key extraction uses
+-- subscript syntax (`traits[k]`) which permits a runtime key. The
+-- merged JSON is rebuilt with STRING_AGG + SAFE.PARSE_JSON so per-key
+-- value JSON (including null/numeric/string/object) round-trips
+-- losslessly.
 
 CREATE OR REPLACE VIEW `@@EVENTS_DATASET@@.users` AS
-SELECT user_id,
-  ARRAY_AGG(traits ORDER BY ts DESC LIMIT 1)[OFFSET(0)] AS traits,
-  MIN(ts) AS first_seen,
-  MAX(ts) AS last_seen
-FROM `@@EVENTS_DATASET@@.identifies`
-GROUP BY user_id;
+WITH expanded AS (
+  SELECT user_id, k AS key, traits[k] AS value_json, ts
+  FROM `@@EVENTS_DATASET@@.identifies`,
+  UNNEST(JSON_KEYS(traits, 1)) AS k
+),
+latest_per_key AS (
+  SELECT user_id, key,
+         ARRAY_AGG(value_json ORDER BY ts DESC LIMIT 1)[OFFSET(0)] AS value_json
+  FROM expanded
+  GROUP BY user_id, key
+),
+merged AS (
+  SELECT user_id,
+         SAFE.PARSE_JSON(
+           '{' || STRING_AGG(CONCAT(TO_JSON_STRING(key), ':', TO_JSON_STRING(value_json)), ',') || '}'
+         ) AS traits
+  FROM latest_per_key
+  GROUP BY user_id
+),
+ts_summary AS (
+  SELECT user_id, MIN(ts) AS first_seen, MAX(ts) AS last_seen
+  FROM `@@EVENTS_DATASET@@.identifies`
+  GROUP BY user_id
+)
+SELECT ts.user_id,
+       COALESCE(m.traits, JSON '{}') AS traits,
+       ts.first_seen,
+       ts.last_seen
+FROM ts_summary ts
+LEFT JOIN merged m USING (user_id);
 
 CREATE OR REPLACE VIEW `@@EVENTS_DATASET@@.groups_current` AS
-SELECT group_type, group_id,
-  ARRAY_AGG(traits ORDER BY ts DESC LIMIT 1)[OFFSET(0)] AS traits,
-  MIN(ts) AS first_seen,
-  MAX(ts) AS last_seen
-FROM `@@EVENTS_DATASET@@.groups`
-GROUP BY group_type, group_id;
+WITH expanded AS (
+  SELECT group_type, group_id, k AS key, traits[k] AS value_json, ts
+  FROM `@@EVENTS_DATASET@@.groups`,
+  UNNEST(JSON_KEYS(traits, 1)) AS k
+),
+latest_per_key AS (
+  SELECT group_type, group_id, key,
+         ARRAY_AGG(value_json ORDER BY ts DESC LIMIT 1)[OFFSET(0)] AS value_json
+  FROM expanded
+  GROUP BY group_type, group_id, key
+),
+merged AS (
+  SELECT group_type, group_id,
+         SAFE.PARSE_JSON(
+           '{' || STRING_AGG(CONCAT(TO_JSON_STRING(key), ':', TO_JSON_STRING(value_json)), ',') || '}'
+         ) AS traits
+  FROM latest_per_key
+  GROUP BY group_type, group_id
+),
+ts_summary AS (
+  SELECT group_type, group_id, MIN(ts) AS first_seen, MAX(ts) AS last_seen
+  FROM `@@EVENTS_DATASET@@.groups`
+  GROUP BY group_type, group_id
+)
+SELECT ts.group_type, ts.group_id,
+       COALESCE(m.traits, JSON '{}') AS traits,
+       ts.first_seen,
+       ts.last_seen
+FROM ts_summary ts
+LEFT JOIN merged m USING (group_type, group_id);
 
 CREATE OR REPLACE VIEW `@@EVENTS_DATASET@@.user_groups_current` AS
 SELECT user_id, group_type,
