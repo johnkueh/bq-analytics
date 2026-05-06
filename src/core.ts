@@ -16,10 +16,22 @@ import type {
 } from "./types.js";
 import { randomId } from "./types.js";
 
-export type FeedbackKind = "bug" | "request" | "general" | (string & {});
+export type FeedbackKind =
+  | "bug"
+  | "request"
+  | "general"
+  | "email"
+  | "bounce"
+  | "complaint"
+  | (string & {});
 
 export interface FeedbackInput {
-  /** "bug" | "request" | "general" — anything else is accepted as a custom kind. Default "general". */
+  /**
+   * `bug` / `request` / `general` — in-product feedback (e.g. a FeedbackSheet).
+   * `email` — inbound support email captured via a webhook (e.g. Resend `email.received`).
+   * `bounce` / `complaint` — deliverability signals from the email provider.
+   * Anything else is accepted as a custom kind. Default "general".
+   */
   kind?: FeedbackKind;
   /** Optional short subject line. */
   subject?: string;

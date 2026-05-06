@@ -353,7 +353,7 @@ One method writes structured feedback into a dedicated `events.feedback` table â
 ```ts
 analytics.feedback(
   {
-    kind: "bug",                          // "bug" | "request" | "general" | (custom)
+    kind: "bug",                          // "bug" | "request" | "general" | "email" | "bounce" | "complaint" | (custom)
     subject: "Translate button does nothing",
     message: "After uploading a video, the Translate button is unresponsive.",
     severity: "high",
