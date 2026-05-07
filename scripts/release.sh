@@ -42,7 +42,9 @@ echo "  ok"
 
 if [[ "$DRY" == "1" ]]; then
   CURRENT=$(jq -r .version package.json)
+  PLUGIN_CURRENT=$(jq -r .version .claude-plugin/plugin.json)
   echo "→ DRY: would bump $CURRENT ($BUMP), tag, and push"
+  echo "       plugin.json currently $PLUGIN_CURRENT — would match new version"
   npm pack --dry-run 2>&1 | tail -10
   exit 0
 fi
@@ -51,8 +53,14 @@ echo "→ bump $BUMP"
 NEW_VERSION=$(npm version "$BUMP" --no-git-tag-version | tr -d 'v')
 echo "  -> $NEW_VERSION"
 
+# Keep the Claude Code plugin manifest in lockstep with the SDK version, so
+# /plugin install pins the same release as `pnpm add bq-analytics`.
+PLUGIN_JSON=".claude-plugin/plugin.json"
+TMP=$(mktemp)
+jq --arg v "$NEW_VERSION" '.version = $v' "$PLUGIN_JSON" > "$TMP" && mv "$TMP" "$PLUGIN_JSON"
+
 echo "→ commit + tag"
-git add package.json
+git add package.json "$PLUGIN_JSON"
 git commit -m "release: v${NEW_VERSION}"
 # Annotated tag — required for `git push --follow-tags`. Lightweight tags
 # wouldn't be pushed and the CI workflow wouldn't fire.
