@@ -28,8 +28,8 @@ pnpm add bq-analytics
 The fastest path is via the Claude Code marketplace — Claude drives the install, detects your runtime, wires the route handlers, and tells you what to verify.
 
 ```
-/plugin marketplace add johnkueh/claude-skills
-/plugin install claude-skills@johnkueh-skills
+/plugin marketplace add johnkueh/bq-analytics
+/plugin install bq-analytics@bq-analytics
 /bq-analytics-install
 ```
 

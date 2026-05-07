@@ -1,0 +1,20 @@
+{
+  "name": "bq-analytics",
+  "owner": {
+    "name": "John Kueh",
+    "url": "https://github.com/johnkueh"
+  },
+  "plugins": [
+    {
+      "name": "bq-analytics",
+      "description": "Skills for installing, instrumenting, querying, and operating bq-analytics — the tiny analytics SDK that pipes events directly to BigQuery. Bundles install (provision + wire SDK + instrument key events), query (BigQuery via bq CLI), flags (Vercel Edge Config feature flags), and release (force-update gate + what's-new sheet).",
+      "source": "./",
+      "skills": [
+        "./claude-skills/install",
+        "./claude-skills/query",
+        "./claude-skills/flags",
+        "./claude-skills/release"
+      ]
+    }
+  ]
+}
