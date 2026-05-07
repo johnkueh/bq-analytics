@@ -1,0 +1,10 @@
+{
+  "name": "bq-analytics",
+  "version": "0.8.4",
+  "description": "Skills for installing, instrumenting, querying, and operating bq-analytics — the tiny analytics SDK that pipes events directly to BigQuery. Bundles install, query, flags, and release.",
+  "author": {
+    "name": "John Kueh",
+    "url": "https://github.com/johnkueh"
+  },
+  "repository": "https://github.com/johnkueh/bq-analytics"
+}
