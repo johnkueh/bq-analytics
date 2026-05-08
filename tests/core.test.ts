@@ -1,5 +1,5 @@
 import { describe, expect, it, beforeEach } from "vitest";
-import { Analytics } from "../src/index.js";
+import { Analytics, withScope } from "../src/index.js";
 import type { BufferedRecord, Transport } from "../src/types.js";
 
 function makeMockTransport() {
@@ -200,5 +200,94 @@ describe("Analytics core", () => {
     const ids = mock.sent[0]!.flatMap((r) => (r.kind === "feedback" ? [r.row.feedback_id] : []));
     expect(ids).toHaveLength(2);
     expect(ids[0]).not.toBe(ids[1]);
+  });
+
+  it("scope().end() emits one log row with accumulated fields", async () => {
+    const scope = a.scope({ source: "process", fields: { pendingId: "p1" } });
+    scope.set({ sourceType: "url" });
+    scope.set({ cacheChecked: true, recipeId: "r1" });
+    scope.end({ outcome: "success" });
+    await a.flush();
+    const r = mock.sent[0]![0]!;
+    expect(r.kind).toBe("log");
+    if (r.kind === "log") {
+      expect(r.row.level).toBe("info");
+      expect(r.row.source).toBe("process");
+      expect(r.row.message).toBe("scope");
+      const fields = JSON.parse(r.row.fields);
+      expect(fields.pendingId).toBe("p1");
+      expect(fields.sourceType).toBe("url");
+      expect(fields.cacheChecked).toBe(true);
+      expect(fields.recipeId).toBe("r1");
+      expect(fields.outcome).toBe("success");
+      expect(typeof fields.duration_ms).toBe("number");
+    }
+  });
+
+  it("scope().end() is idempotent", async () => {
+    const scope = a.scope({ source: "x" });
+    scope.end();
+    scope.end();
+    scope.end();
+    await a.flush();
+    expect(mock.sent[0]).toHaveLength(1);
+  });
+
+  it("scope().error() promotes level and stamps error fields", async () => {
+    const scope = a.scope({ source: "process" });
+    scope.set({ pendingId: "p1" });
+    scope.error(new Error("upstream 503"), { step: "fetch" });
+    scope.end();
+    await a.flush();
+    const r = mock.sent[0]![0]!;
+    if (r.kind === "log") {
+      expect(r.row.level).toBe("error");
+      const fields = JSON.parse(r.row.fields);
+      expect(fields.pendingId).toBe("p1");
+      expect(fields.step).toBe("fetch");
+      expect(fields.error_message).toBe("upstream 503");
+      expect(fields.error_stack).toMatch(/Error: upstream 503/);
+    }
+  });
+
+  it("scope().error() handles non-Error throwables", async () => {
+    const scope = a.scope({ source: "x" });
+    scope.error("plain string");
+    scope.end();
+    await a.flush();
+    const r = mock.sent[0]![0]!;
+    if (r.kind === "log") {
+      const fields = JSON.parse(r.row.fields);
+      expect(fields.error_message).toBe("plain string");
+      expect(fields.error_stack).toBeNull();
+    }
+  });
+
+  it("withScope() ends on success and returns the value", async () => {
+    const result = await withScope(a, { source: "process" }, async (scope) => {
+      scope.set({ step: "done" });
+      return 42;
+    });
+    expect(result).toBe(42);
+    await a.flush();
+    const r = mock.sent[0]![0]!;
+    if (r.kind === "log") {
+      expect(r.row.level).toBe("info");
+      expect(JSON.parse(r.row.fields).step).toBe("done");
+    }
+  });
+
+  it("withScope() rethrows but ends with error level", async () => {
+    await expect(
+      withScope(a, { source: "process" }, async () => {
+        throw new Error("boom");
+      }),
+    ).rejects.toThrow("boom");
+    await a.flush();
+    const r = mock.sent[0]![0]!;
+    if (r.kind === "log") {
+      expect(r.row.level).toBe("error");
+      expect(JSON.parse(r.row.fields).error_message).toBe("boom");
+    }
   });
 });

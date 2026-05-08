@@ -26,10 +26,13 @@ export type {
 
 export {
   Analytics,
+  Scope,
   httpTransport,
+  withScope,
   type FeedbackInput,
   type FeedbackKind,
   type HttpTransportConfig,
+  type ScopeOptions,
 } from "./core.js";
 export {
   Flags,

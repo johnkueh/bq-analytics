@@ -62,6 +62,24 @@ a.identify("u1", { plan: "pro", credits: 47 });
 await a.flush();
 ```
 
+### Wide-event scopes
+
+For multi-step orchestrations (HTTP request, CLI command, client flow), open a scope, accumulate context, end with one row in `logs.raw`:
+
+```ts
+import { withScope } from "bq-analytics";
+
+await withScope(a, { source: "process", fields: { pendingId, householdId } }, async (scope) => {
+  scope.set({ sourceType: "url", cacheChecked: true });
+  const result = await doWork();
+  scope.set({ outcome: "success", recipeId: result.id });
+});
+// → one logs.raw row, source="process", fields contains everything plus duration_ms
+// On throw: scope ends automatically with level="error" and error_message/error_stack.
+```
+
+Query later by any field without joins: `WHERE source = 'process' AND JSON_VALUE(fields.outcome) = 'success'`.
+
 </details>
 
 ## What you can ask your agent
@@ -82,7 +100,7 @@ The bundled [`claude-skills/query/SKILL.md`](claude-skills/query) gives agents p
 
 | Module | What it adds | Required? |
 |---|---|---|
-| `bq-analytics` | Core SDK — `track / identify / group / log / feedback` + `bqTransport` / `httpTransport` | ✅ |
+| `bq-analytics` | Core SDK — `track / identify / group / log / feedback / scope` + `bqTransport` / `httpTransport` | ✅ |
 | `bq-analytics/next` | Next.js route handlers (`/api/track`, log drain, flags, release config) | for Next |
 | `bq-analytics/pino` | pino transport for Express / Fastify / Hono / raw Node | for non-Next |
 | `bq-analytics/browser` | `browserTransport`, `attachBrowserAutoFlush`, `attachWindowErrorHandler` | for web |

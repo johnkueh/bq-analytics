@@ -135,6 +135,18 @@ export class Analytics {
     this.maybeAutoFlush();
   }
 
+  /**
+   * Open a scope for a multi-step operation (HTTP request, CLI command, client
+   * orchestration function). Accumulate context with `scope.set(...)` and call
+   * `scope.end()` when the operation finishes — one wide row lands in
+   * `logs.raw` with all accumulated fields plus `duration_ms`.
+   *
+   * Use `withScope(analytics, opts, fn)` for the common try/catch/end shape.
+   */
+  scope(opts: ScopeOptions): Scope {
+    return new Scope(this, opts);
+  }
+
   /** Returns the count of buffered records (for tests / observability). */
   size(): number {
     return this.buffer.length;
@@ -188,4 +200,122 @@ export function httpTransport(config: HttpTransportConfig): Transport {
 
 function nowIso(): string {
   return new Date().toISOString();
+}
+
+export interface ScopeOptions {
+  /**
+   * Stable namespace written to `logs.raw.source`. Pick one per orchestration
+   * (e.g. `"process"`, `"submit"`, `"instagram_extract"`) so wide-event rows
+   * are filterable from generic `lambda` / `edge` drain rows.
+   */
+  source: string;
+  /**
+   * Written to `logs.raw.message`. Default `"scope"`. The accumulated context
+   * lives in `fields` — message stays short.
+   */
+  message?: string;
+  /**
+   * Initial fields. Useful for identifiers that apply to the whole scope
+   * (request_id, household_id, source_type).
+   */
+  fields?: Props;
+  /**
+   * Default `"info"`. If `scope.error(...)` is called, the level is auto-
+   * promoted to `"error"` regardless of this setting.
+   */
+  level?: "debug" | "info" | "warn" | "error";
+}
+
+/**
+ * Wide-event accumulator for a bounded operation. Built via `analytics.scope({...})`
+ * or wrapped via `withScope(analytics, {...}, fn)`. Emits one log row on `end()`.
+ */
+export class Scope {
+  private analytics: Pick<Analytics, "log">;
+  private opts: ScopeOptions;
+  private fields: Props;
+  private startedAt: number;
+  private errored = false;
+  private ended = false;
+
+  constructor(analytics: Pick<Analytics, "log">, opts: ScopeOptions) {
+    this.analytics = analytics;
+    this.opts = opts;
+    this.fields = { ...(opts.fields ?? {}) };
+    this.startedAt = Date.now();
+  }
+
+  /** Merge fields into the accumulator. Last write wins per key. */
+  set(fields: Props): this {
+    Object.assign(this.fields, fields);
+    return this;
+  }
+
+  /**
+   * Record an error. Promotes the eventual log level to `"error"`. Does NOT
+   * end the scope — callers typically rethrow and let `withScope` (or their
+   * own finally block) call `end()`.
+   */
+  error(err: unknown, fields: Props = {}): this {
+    this.errored = true;
+    const isErr = err instanceof Error;
+    Object.assign(this.fields, fields, {
+      error_message: isErr ? err.message : String(err),
+      error_stack: isErr ? err.stack ?? null : null,
+    });
+    return this;
+  }
+
+  /**
+   * Emit the wide-event row. Idempotent — subsequent calls are no-ops.
+   * Auto-stamps `duration_ms`. Pass final fields here if you have last-mile
+   * outcome data (status, recipe_id, etc.).
+   */
+  end(fields: Props = {}): void {
+    if (this.ended) return;
+    this.ended = true;
+    Object.assign(this.fields, fields, {
+      duration_ms: Date.now() - this.startedAt,
+    });
+    const level = this.errored ? "error" : this.opts.level ?? "info";
+    this.analytics.log(level, this.opts.message ?? "scope", this.fields, this.opts.source);
+  }
+
+  /** True after `end()` has fired. */
+  get isEnded(): boolean {
+    return this.ended;
+  }
+}
+
+/**
+ * Wrap an async orchestration in a scope. Catches and rethrows so the scope
+ * always ends with the right level/fields:
+ *
+ * - Returns the function's value on success (scope ends with `level: "info"`).
+ * - Records the thrown error and ends the scope with `level: "error"`,
+ *   then rethrows so callers handle it normally.
+ *
+ * ```ts
+ * await withScope(analytics, { source: "process", fields: { pendingId } }, async (scope) => {
+ *   scope.set({ cacheChecked: true });
+ *   const result = await doWork();
+ *   scope.set({ outcome: "success", recipeId: result.id });
+ * });
+ * ```
+ */
+export async function withScope<T>(
+  analytics: Pick<Analytics, "log" | "scope">,
+  opts: ScopeOptions,
+  fn: (scope: Scope) => Promise<T> | T,
+): Promise<T> {
+  const scope = analytics.scope(opts);
+  try {
+    const result = await fn(scope);
+    scope.end();
+    return result;
+  } catch (err) {
+    scope.error(err);
+    scope.end();
+    throw err;
+  }
 }
