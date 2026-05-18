@@ -54,6 +54,10 @@
       "types": "./dist/transports/pino.d.ts",
       "import": "./dist/transports/pino.js"
     },
+    "./logger": {
+      "types": "./dist/logger.d.ts",
+      "import": "./dist/logger.js"
+    },
     "./edge-config": {
       "types": "./dist/flag-sources/edge-config.d.ts",
       "import": "./dist/flag-sources/edge-config.js"

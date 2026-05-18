@@ -6,6 +6,7 @@ export default defineConfig({
     "src/index.rn.ts",
     "src/auth.ts",
     "src/insert.ts",
+    "src/logger.ts",
     "src/transports/browser.ts",
     "src/transports/react-native.ts",
     "src/transports/pino.ts",

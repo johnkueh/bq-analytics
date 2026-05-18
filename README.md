@@ -103,6 +103,7 @@ The bundled [`claude-skills/query/SKILL.md`](claude-skills/query) gives agents p
 | `bq-analytics` | Core SDK — `track / identify / group / log / feedback / scope` + `bqTransport` / `httpTransport` | ✅ |
 | `bq-analytics/next` | Next.js route handlers (`/api/track`, log drain, flags, release config) | for Next |
 | `bq-analytics/pino` | pino transport for Express / Fastify / Hono / raw Node | for non-Next |
+| `bq-analytics/logger` | `createLogger(analytics)` — `console`-shaped wrapper around `analytics.log()` for server code that wants log lines in BQ without a Vercel Log Drain | optional |
 | `bq-analytics/browser` | `browserTransport`, `attachBrowserAutoFlush`, `attachWindowErrorHandler` | for web |
 | `bq-analytics/react-native` | `reactNativeTransport`, `attachExpoErrorHandler`, `attachAppStateFlush` | for RN/Expo |
 | `bq-analytics/cli` | `attachCliHooks` — uncaught + unhandled + SIGINT/SIGTERM | for CLI |
@@ -159,6 +160,17 @@ after(() => analytics().flush());
 ```
 
 The setup script provisions the Vercel Log Drain pointed at `/api/internal/log-drain` automatically.
+
+The drain is the right path when you can't intercept stdout from third-party code that uses `console.*` directly. For your own server code, `bq-analytics/logger` is usually cheaper — every Vercel function invocation triggers a drain HTTP-proxy event, so at non-trivial traffic the drain itself becomes the largest line item in your Vercel function-invocations bill. Direct emission via `logger.info(...)` skips that entirely:
+
+```ts
+// src/lib/logger.ts
+import { createLogger } from "bq-analytics/logger";
+import { analytics } from "./analytics"; // returns Analytics singleton
+export const logger = createLogger(analytics, { source: "lambda" });
+```
+
+`logger.info("[submit] accepted", { url, pending_id })` writes both to stdout (still visible in `vercel logs` for live tail) and to `logs.raw` via the same transport that handles `events.raw`.
 
 </details>
 
