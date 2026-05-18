@@ -1,4 +1,6 @@
+import { after } from "next/server";
 import type { BqTransportConfig } from "../index.js";
+import type { Analytics } from "../core.js";
 import type { BufferedRecord, Transport } from "../types.js";
 
 // `bqTransport` is loaded dynamically inside `createTrackRoute` so this file
@@ -6,6 +8,41 @@ import type { BufferedRecord, Transport } from "../types.js";
 // — the static chain `next.ts → index.ts → auth.ts` would otherwise drag
 // node:* imports into the Edge bundle even when they're never reached at
 // runtime.
+
+/**
+ * Schedule `analytics.flush()` to run after the current Next.js response is
+ * sent. Native-Next equivalent of `honoFlushMiddleware` — call this inside
+ * a Route Handler (`app/api/.../route.ts`) that emits any
+ * `analytics.{track,identify,group,feedback,log}()` records, otherwise the
+ * buffered batch can be lost if the serverless instance is recycled before
+ * the auto-flush threshold fires.
+ *
+ * Accepts either an `Analytics` instance or a `() => Analytics` thunk so
+ * consumers using `globalThis`-cached lazy singletons can pass the resolver
+ * directly.
+ *
+ * Safe to call multiple times in a single handler — extra `flush()`s are
+ * cheap no-ops once the buffer is drained.
+ *
+ * @example
+ *   import { flushAfter } from "bq-analytics/next";
+ *   import { analytics } from "@/lib/analytics";
+ *
+ *   export async function GET(req: Request) {
+ *     flushAfter(analytics);
+ *     // ... handler may call analytics().track(...) or logger.*
+ *     return Response.json({ ok: true });
+ *   }
+ */
+export function flushAfter(
+  analyticsOrResolver: Analytics | (() => Analytics),
+): void {
+  const a =
+    typeof analyticsOrResolver === "function"
+      ? (analyticsOrResolver as () => Analytics)()
+      : analyticsOrResolver;
+  after(() => a.flush().catch(() => {}));
+}
 
 export interface TrackRouteOptions extends BqTransportConfig {
   /**

@@ -154,10 +154,12 @@ export function analytics() {
 }
 
 // in any route handler
-import { after } from "next/server";
+import { flushAfter } from "bq-analytics/next";
+flushAfter(analytics);
 analytics().track("foo", { ... }, { userId });
-after(() => analytics().flush());
 ```
+
+`flushAfter` schedules `analytics.flush()` to run after the response is sent (via Next's `after()` → `waitUntil`). Without it, buffered records can be lost when a serverless instance is recycled. Use it in every Next route handler that emits events; `bq-analytics/hono`'s `honoFlushMiddleware` covers the same ground for Hono apps.
 
 The setup script provisions the Vercel Log Drain pointed at `/api/internal/log-drain` automatically.
 
