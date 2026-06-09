@@ -1,9 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   createTrackRoute,
-  createLogDrainRoute,
   cachedResolver,
-  parseDrainLine,
 } from "../src/handlers/next.js";
 import type { BufferedRecord } from "../src/types.js";
 
@@ -194,132 +192,6 @@ describe("createTrackRoute", () => {
   });
 });
 
-describe("createLogDrainRoute", () => {
-  it("rejects bad secret", async () => {
-    const { POST } = createLogDrainRoute({ projectId: "p", secret: "right" });
-    const res = await POST(
-      new Request("http://x/api/internal/log-drain", {
-        method: "POST",
-        headers: { "x-drain-secret": "wrong" },
-        body: "",
-      }),
-    );
-    expect(res.status).toBe(403);
-  });
-
-  it("accepts matching secret with empty body", async () => {
-    const { POST } = createLogDrainRoute({ projectId: "p", secret: "right" });
-    const res = await POST(
-      new Request("http://x/api/internal/log-drain", {
-        method: "POST",
-        headers: { "x-drain-secret": "right" },
-        body: "",
-      }),
-    );
-    expect(res.status).toBe(200);
-  });
-
-  it("GET echoes x-vercel-verify when no static token configured", () => {
-    const { GET } = createLogDrainRoute({ projectId: "p", secret: "right" });
-    const res = GET(
-      new Request("http://x/api/internal/log-drain", {
-        method: "GET",
-        headers: { "x-vercel-verify": "verify-token-123" },
-      }),
-    );
-    expect(res.status).toBe(200);
-    expect(res.headers.get("x-vercel-verify")).toBe("verify-token-123");
-  });
-
-  it("GET returns the static vercelVerifyToken regardless of request headers", () => {
-    const { GET } = createLogDrainRoute({
-      projectId: "p",
-      secret: "right",
-      vercelVerifyToken: "team-static-token-xyz",
-    });
-    // No incoming header — Vercel's modern validator does not send one
-    const res = GET(new Request("http://x/api/internal/log-drain"));
-    expect(res.status).toBe(200);
-    expect(res.headers.get("x-vercel-verify")).toBe("team-static-token-xyz");
-  });
-
-  it("GET prefers static token over request header (so a probe can't override)", () => {
-    const { GET } = createLogDrainRoute({
-      projectId: "p",
-      secret: "right",
-      vercelVerifyToken: "configured",
-    });
-    const res = GET(
-      new Request("http://x/api/internal/log-drain", {
-        headers: { "x-vercel-verify": "incoming" },
-      }),
-    );
-    expect(res.headers.get("x-vercel-verify")).toBe("configured");
-  });
-
-  it("GET responds 200 even without verify header or token", () => {
-    const { GET } = createLogDrainRoute({ projectId: "p", secret: "right" });
-    const res = GET(new Request("http://x/api/internal/log-drain"));
-    expect(res.status).toBe(200);
-  });
-
-  it("POST forbidden response carries x-vercel-verify (validator probes via POST too)", async () => {
-    const { POST } = createLogDrainRoute({
-      projectId: "p",
-      secret: "right",
-      vercelVerifyToken: "team-token-xyz",
-    });
-    const res = await POST(
-      new Request("http://x/api/internal/log-drain", {
-        method: "POST",
-        body: "",
-      }),
-    );
-    expect(res.status).toBe(403);
-    expect(res.headers.get("x-vercel-verify")).toBe("team-token-xyz");
-  });
-
-  it("POST drops all rows when every line is self-loop (skips insert entirely)", async () => {
-    const { POST } = createLogDrainRoute({
-      projectId: "fake-but-never-reached",
-      secret: "right",
-    });
-    const selfLine = JSON.stringify({
-      timestamp: 1714300000000,
-      message: "[POST] /api/internal/log-drain status=200",
-      proxy: { path: "/api/internal/log-drain", statusCode: 200 },
-    });
-    const res = await POST(
-      new Request("http://x/api/internal/log-drain", {
-        method: "POST",
-        headers: { "x-drain-secret": "right" },
-        body: `${selfLine}\n${selfLine}\n${selfLine}`,
-      }),
-    );
-    expect(res.status).toBe(200);
-    const body = await res.json();
-    expect(body.accepted).toBe(0);
-    expect(body.dropped).toBe(3);
-  });
-
-  it("POST 200 response also carries x-vercel-verify", async () => {
-    const { POST } = createLogDrainRoute({
-      projectId: "p",
-      secret: "right",
-      vercelVerifyToken: "team-token-xyz",
-    });
-    const res = await POST(
-      new Request("http://x/api/internal/log-drain", {
-        method: "POST",
-        headers: { "x-drain-secret": "right" },
-        body: "",
-      }),
-    );
-    expect(res.status).toBe(200);
-    expect(res.headers.get("x-vercel-verify")).toBe("team-token-xyz");
-  });
-});
-
 describe("cachedResolver", () => {
   it("calls resolve once for the same key", async () => {
     let calls = 0;
@@ -416,46 +288,5 @@ describe("cachedResolver", () => {
     await resolve(new Request("http://x", { headers: { authorization: "c" } })); // evicts a
     await resolve(new Request("http://x", { headers: { authorization: "a" } })); // miss again
     expect(calls).toBe(4);
-  });
-});
-
-describe("parseDrainLine", () => {
-  it("parses a typical Vercel drain line", () => {
-    const line = JSON.stringify({
-      timestamp: 1714300000000,
-      level: "info",
-      type: "stdout",
-      source: "lambda",
-      message: "hello",
-      requestId: "req-1",
-      deploymentId: "dep-1",
-      proxy: { method: "GET", path: "/api/x", statusCode: 200, region: "iad1" },
-    });
-    const r = parseDrainLine(line);
-    expect(r.path).toBe("/api/x");
-    expect(r.status).toBe(200);
-    expect(r.region).toBe("iad1");
-    expect(r.message).toBe("hello");
-    expect(r.request_id).toBe("req-1");
-    expect(r.level).toBe("info");
-  });
-
-  it("normalizes 'warning' to 'warn' and 'fatal' to 'error'", () => {
-    const a = parseDrainLine(JSON.stringify({ level: "warning", message: "x" }));
-    const b = parseDrainLine(JSON.stringify({ level: "fatal", message: "x" }));
-    expect(a.level).toBe("warn");
-    expect(b.level).toBe("error");
-  });
-
-  it("handles non-JSON lines gracefully", () => {
-    const r = parseDrainLine("totally not json");
-    expect(r.message).toBe("totally not json");
-    expect(r.source).toBe("external");
-  });
-
-  it("truncates oversized messages", () => {
-    const big = "x".repeat(10000);
-    const r = parseDrainLine(JSON.stringify({ message: big }));
-    expect((r.message as string).length).toBeLessThanOrEqual(8000);
   });
 });

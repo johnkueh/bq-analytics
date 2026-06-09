@@ -13,7 +13,7 @@ This skill has three phases. **Phases 1 and 2 are required**; Phase 3 is optiona
 
 ## Step 0 — Detect the runtime
 
-bq-analytics' first-class server target is **Next.js App Router on Vercel** — the route factories (`createTrackRoute`, `createLogDrainRoute`) are designed for that, and the setup script provisions Vercel-specific env vars + a Vercel Log Drain. Other server frameworks work but require user-written adapters (the SDK ships generic `Request → Response` handlers; mapping into Hono / Express / Fastify is a few lines, see README).
+bq-analytics' first-class server target is **Next.js App Router on Vercel** — the route factory (`createTrackRoute`) is designed for that, and the setup script provisions Vercel-specific env vars. Other server frameworks work but require user-written adapters (the SDK ships generic `Request → Response` handlers; mapping into Hono / Express / Fastify is a few lines, see README).
 
 Look at the repo to decide which path to follow.
 
@@ -40,40 +40,16 @@ A project may be a mix (e.g. Next.js web + Expo monorepo) — install the server
 
 ## Provision GCP resources
 
-The setup script handles BQ datasets + tables + IAM. For Vercel-hosted projects it also provisions Workload Identity Federation and a Log Drain.
+The setup script handles BQ datasets + tables + IAM. For Vercel-hosted projects it also provisions Workload Identity Federation.
 
-**Vercel + Next.js** — first install (project not yet deployed):
-
-```sh
-# Step 1: provision everything except the Log Drain
-VERCEL_TOKEN=<paste> \
-  ./node_modules/bq-analytics/scripts/setup-bq-oidc.sh \
-    --gcp <GCP_PROJECT_ID> \
-    --team <VERCEL_TEAM_SLUG> \
-    --project <VERCEL_PROJECT_NAME> \
-    --skip-drain
-
-# Step 2: wire up the route files (see "Wire up the runtime" below)
-# Step 3: deploy (git push or `vercel --prod`)
-# Step 4: register the Log Drain (URL must be live)
-VERCEL_TOKEN=<paste> \
-  ./node_modules/bq-analytics/scripts/setup-bq-oidc.sh \
-    --gcp <GCP_PROJECT_ID> \
-    --team <VERCEL_TEAM_SLUG> \
-    --project <VERCEL_PROJECT_NAME> \
-    --domain <PROJECT_DOMAIN> \
-    --drain-only
-```
-
-**Vercel + Next.js** — re-run / repair (project already deployed):
+**Vercel + Next.js** — one pass provisions everything (re-runnable / idempotent):
 
 ```sh
 VERCEL_TOKEN=<paste> \
   ./node_modules/bq-analytics/scripts/setup-bq-oidc.sh \
     --gcp <GCP_PROJECT_ID> \
     --team <VERCEL_TEAM_SLUG> \
-    --project <VERCEL_PROJECT_NAME> \
-    --domain <PROJECT_DOMAIN>
+    --project <VERCEL_PROJECT_NAME>
 ```
 
 **Non-Vercel (Express, Hono, Render, Fly, Lambda, etc.)** — only need datasets + a service account:
@@ -94,13 +70,12 @@ The script is idempotent and:
 3. *(Vercel)* `vercel-bq` SA with `bigquery.dataEditor` on the two datasets + `bigquery.jobUser` at project level.
 4. *(Vercel)* Binds Vercel principals (production, preview, development) to the SA.
 5. *(Vercel)* Pushes 7 env vars to all three Vercel environments.
-6. *(Vercel)* Creates a Log Drain pointed at `/api/internal/log-drain`.
 
 ## Wire up the runtime — pick one or more
 
 ### Next.js (Vercel)
 
-Two route files + one helper:
+One route file + one helper:
 
 **`src/app/api/track/route.ts`**
 ```ts
@@ -121,29 +96,20 @@ export const POST = createTrackRoute({
 
 **Why `waitUntil`?** Without it the handler blocks until BQ confirms the insert (~50-150ms latency added to every client request). With `waitUntil` the BQ insert runs in the background after the response is sent — clients get fast 200s. Browser/RN SDKs already retry on network failure via localStorage/AsyncStorage, so the lack of 5xx feedback isn't load-bearing.
 
-**`src/app/api/internal/log-drain/route.ts`**
+To get server log lines into `logs.raw`, use `bq-analytics/logger` — a `console`-shaped wrapper around `analytics.log()` that emits each line directly via the same transport as `events.raw`:
+
 ```ts
-import { createLogDrainRoute } from "bq-analytics/next";
-// MUST export both POST and GET. Vercel's modern drain creation validator
-// probes GET with NO incoming headers and expects the response to carry
-// `x-vercel-verify: <team-token>`. The setup script auto-fetches the token
-// from your team and pushes it as VERCEL_VERIFY_TOKEN — pass it through.
-export const { POST, GET } = createLogDrainRoute({
-  projectId: process.env.GCP_PROJECT_ID,
-  secret: process.env.LOG_DRAIN_SECRET!,
-  vercelVerifyToken: process.env.VERCEL_VERIFY_TOKEN,
-});
+// src/lib/logger.ts
+import { createLogger } from "bq-analytics/logger";
+import { analytics } from "./analytics";
+export const logger = createLogger(analytics, { source: "lambda" });
 ```
 
-If `VERCEL_VERIFY_TOKEN` isn't set, the setup script will detect this on drain creation, parse the expected token from Vercel's 422 response, push it as an env var, and tell you to redeploy + re-run with `--drain-only`.
-
-⚠️ **Never `console.log` inside POST** — drained lines are themselves drained, infinite loop. `console.error` on real errors only.
-
-If using Clerk middleware (`src/proxy.ts` / `src/middleware.ts`), add `/api/internal/log-drain` and `/api/track` to the public route list.
+If using Clerk middleware (`src/proxy.ts` / `src/middleware.ts`), add `/api/track` to the public route list.
 
 ### Local dev — pulling env vars
 
-After step 1 of the setup (env vars pushed to Vercel), pull them locally so `pnpm dev` can write to your real BigQuery dataset:
+After the setup (env vars pushed to Vercel), pull them locally so `pnpm dev` can write to your real BigQuery dataset:
 
 ```sh
 vercel env pull .env.local
@@ -485,7 +451,7 @@ Match each against the catalog below and suggest 3–7 events to start with — 
 Pick the ones that map to actual code in the repo. Don't invent events for features that don't exist.
 
 **Acquisition / activation**
-- `pageview` (consider Log Drain instead — it captures every request automatically)
+- `pageview` — track explicitly on route change (server-side in a layout, or client-side on navigation)
 - `signup.started` — at sign-up form mount or first field interaction
 - `signup.completed` — after Clerk `user.created` webhook fires (server-side, authoritative)
 - `onboarding.completed` — after the user finishes the welcome flow
@@ -696,15 +662,13 @@ bq query --nouse_legacy_sql --format=pretty \
   "SELECT ts, event_name FROM \`<gcp>.events.raw\` WHERE event_name = 'smoke' ORDER BY ts DESC LIMIT 1"
 ```
 
-For log drain validation, hit any route that `console.log`s and check `logs.raw` after ~10–60s — Vercel batches drain delivery.
+To verify server logging, call `logger.info(...)` from any route and check `logs.raw` after ~10s (streaming buffer).
 
 ## Troubleshooting
 
 **"Streaming insert is not allowed in the free tier"** — the GCP project is on BQ Sandbox. Enable billing on it via `console.cloud.google.com/billing` or pick a different project.
 
 **"Permission 'bigquery.tables.updateData' denied"** — the WIF binding didn't propagate yet, or the env vars are stale on Vercel. Wait 30s and retry, or run the setup script again.
-
-**Drain handler 502s** — `LOG_DRAIN_SECRET` doesn't match the value Vercel sends in `x-drain-secret`. Re-run setup with `--skip-vercel` ... actually no, just re-run setup; it regenerates the secret.
 
 **Anonymous events being dropped** — `resolveUser` is required by default. If you want anonymous events, accept them in `resolveUser` (return null) and don't set `rejectAnonymous`.
 

@@ -206,7 +206,7 @@ export interface ScopeOptions {
   /**
    * Stable namespace written to `logs.raw.source`. Pick one per orchestration
    * (e.g. `"process"`, `"submit"`, `"instagram_extract"`) so wide-event rows
-   * are filterable from generic `lambda` / `edge` drain rows.
+   * are filterable by where they came from.
    */
   source: string;
   /**

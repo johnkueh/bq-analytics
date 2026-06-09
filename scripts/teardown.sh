@@ -26,4 +26,4 @@ confirm "Delete WIF pool $POOL_ID (this is reversible — pools can be undeleted
   gcloud iam workload-identity-pools delete "$POOL_ID" --project="$GCP_PROJECT_ID" --location=global --quiet || true
 }
 
-echo "Done. Vercel env vars + log drains were left untouched — remove via dashboard if needed."
+echo "Done. Vercel env vars were left untouched — remove via dashboard if needed."

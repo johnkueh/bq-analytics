@@ -4,10 +4,9 @@ import type { Analytics } from "../core.js";
 import type { BufferedRecord, Transport } from "../types.js";
 
 // `bqTransport` is loaded dynamically inside `createTrackRoute` so this file
-// stays Edge-bundler-safe for consumers that only use `createLogDrainRoute`
-// — the static chain `next.ts → index.ts → auth.ts` would otherwise drag
-// node:* imports into the Edge bundle even when they're never reached at
-// runtime.
+// stays Edge-bundler-safe — the static chain `next.ts → index.ts → auth.ts`
+// would otherwise drag node:* imports into the Edge bundle even when they're
+// never reached at runtime.
 
 /**
  * Schedule `analytics.flush()` to run after the current Next.js response is
@@ -98,13 +97,11 @@ export interface TrackRouteOptions extends BqTransportConfig {
  *
  * Response shape depends on `waitUntil`:
  * - With `waitUntil`: returns 200 immediately, BQ insert runs in background.
- *   Insert errors are logged via `console.error` (which the Log Drain
- *   captures into logs.raw if installed).
+ *   Insert errors are logged via `console.error`.
  * - Without `waitUntil`: blocks until BQ confirms; returns 502 on failure.
  */
 export function createTrackRoute(opts: TrackRouteOptions) {
-  // Lazy-load bqTransport so consumers that import this file purely for
-  // `createLogDrainRoute` (typically on Edge runtime) don't pay the static
+  // Lazy-load bqTransport so Edge-runtime consumers don't pay the static
   // `node:*` import chain via index.ts → auth.ts. First POST resolves it
   // once and caches the promise.
   let transportPromise: Promise<Transport> | null = null;
@@ -151,8 +148,7 @@ export function createTrackRoute(opts: TrackRouteOptions) {
         getTransport()
           .then((transport) => transport.send(cleaned))
           .catch((err) => {
-            // Don't throw — caller already got 200. Log so the failure is
-            // captured by the drain pipeline (logs.raw) for diagnosis.
+            // Don't throw — caller already got 200. Log for diagnosis.
             console.error("[bq-analytics] /api/track insert failed:", err);
           }),
       );
@@ -226,190 +222,6 @@ export function cachedResolver<TKey extends string>(
     cache.set(k, { value, expiresAt: now + ttlMs });
     return value;
   };
-}
-
-export interface LogDrainRouteOptions {
-  projectId: string;
-  logsDataset?: string;
-  /** Shared secret expected on `x-drain-secret` header. */
-  secret: string;
-  /**
-   * Team-level `x-vercel-verify` token. **Required for new Vercel projects.**
-   *
-   * Vercel's drain-creation validator probes the URL with a GET (no headers)
-   * and requires the response to carry `x-vercel-verify: <team-token>`. Find
-   * yours by checking https://vercel.com/<team>/~/settings (search "verify")
-   * or by attempting to create a drain — Vercel's 422 response includes the
-   * expected token. The setup script auto-pushes this as the
-   * `VERCEL_VERIFY_TOKEN` env var.
-   *
-   * If omitted, GET falls back to echoing whatever `x-vercel-verify` is in
-   * the request — which works for some legacy Vercel teams but fails the
-   * modern creation flow.
-   */
-  vercelVerifyToken?: string;
-}
-
-/**
- * Next.js App Router handler factory for Vercel Log Drain receiver.
- * Returns `{ POST, GET }` — both must be exported from your route file:
- *
- * ```ts
- * // src/app/api/internal/log-drain/route.ts
- * export const runtime = 'edge'; // strongly recommended — see below
- * export const { POST, GET } = createLogDrainRoute({
- *   projectId, secret: process.env.LOG_DRAIN_SECRET!,
- * });
- * ```
- *
- * **Self-loop is filtered automatically.** Every Vercel runtime emits a log
- * event per function invocation — `lambda` emits START / END / REPORT lines,
- * `edge` emits one `edge-function-invocation` event — which then get shipped
- * to this drain → re-emitted → shipped again. Pre-fix at recipes.im we
- * observed 96–98% of `logs.raw` being the drain logging itself (~440k/day).
- *
- * The handler now drops any drain row whose `path` matches its own URL
- * (auto-detected from `req.url`), breaking the recursive write at the
- * INGEST layer. Returns `{ ok, accepted, dropped }` so consumers can see
- * the suppression count.
- *
- * **Edge runtime is also recommended** for two further wins:
- *   1. Edge log events are smaller (one line vs four) — less BQ row size.
- *   2. Edge billing is meaningfully cheaper per invocation than lambda
- *      Active CPU.
- * The drain handler uses only fetch / Web APIs so it runs cleanly on Edge.
- * Per Vercel's drain log-source docs:
- * https://vercel.com/docs/drains/reference/logs#log-sources
- *
- * Auth: Vercel OIDC (`@vercel/functions/oidc`) is the production auth path
- * and works on Edge. Service-account-JSON and ADC fallback paths in `auth.ts`
- * are Node-only — Edge consumers should rely on OIDC (the `bq-analytics`
- * setup script configures this by default) or the `BQA_ACCESS_TOKEN` env
- * override.
- *
- * - `POST` accepts NDJSON drain batches and writes them into <logsDataset>.raw.
- * - `GET` echoes back `x-vercel-verify` so Vercel's drain-creation endpoint
- *   validation succeeds. Without this, drain creation fails with
- *   "Cannot validate endpoint url" / missing x-vercel-verify header.
- *
- * **POST is intentionally blocking** — it awaits the BQ insert and returns
- * 502 on failure. This is by design: Vercel's Log Drain delivers at-least-
- * once by retrying on 5xx, so blocking + 502 preserves durability. Returning
- * 200 in the background would turn drain into at-most-once. BQ insert
- * latency (~50–150ms) is well within Vercel's drain delivery timeout.
- *
- * IMPORTANT: never call console.log inside POST — drained log lines are
- * themselves drained, creating an infinite loop. (On Edge runtime, even
- * `console.*` output is emitted as drain events, so this rule still
- * applies.)
- */
-export function createLogDrainRoute(opts: LogDrainRouteOptions) {
-  const dataset = opts.logsDataset ?? "logs";
-
-  // Vercel's drain validator probes via GET, HEAD, **and POST**, and
-  // requires *every* response to carry `x-vercel-verify: <team-token>`.
-  // Stamp the header on every Response we hand back so validation passes
-  // regardless of method.
-  const stamp = (res: Response): Response => {
-    if (opts.vercelVerifyToken) {
-      res.headers.set("x-vercel-verify", opts.vercelVerifyToken);
-    }
-    return res;
-  };
-
-  async function POST(req: Request): Promise<Response> {
-    if (req.headers.get("x-drain-secret") !== opts.secret) {
-      return stamp(json({ error: "forbidden" }, 403));
-    }
-
-    const text = await req.text();
-    const lines = text.trim().split("\n").filter(Boolean);
-    if (lines.length === 0) return stamp(json({ ok: true, accepted: 0 }));
-
-    // Self-loop filter: drop drain rows whose path matches this handler's
-    // own URL. Vercel emits a log event for every invocation regardless of
-    // runtime (lambda emits START/END/REPORT; edge emits one
-    // edge-function-invocation event), and those events get shipped right
-    // back to this handler — recursive write loop. Filtering at INGEST
-    // breaks the loop without needing Vercel-side path-exclusion config
-    // (which doesn't exist as of 2026-05). Auto-detected from req.url so
-    // the consumer doesn't have to plumb their own path through.
-    const ownPath = (() => {
-      try {
-        return new URL(req.url).pathname;
-      } catch {
-        return null;
-      }
-    })();
-    const rows = lines
-      .map((line) => parseDrainLine(line))
-      .filter((r) => !ownPath || r.path !== ownPath);
-    const dropped = lines.length - rows.length;
-
-    if (rows.length === 0) {
-      return stamp(json({ ok: true, accepted: 0, dropped }));
-    }
-
-    try {
-      const { insertRows } = await import("../insert.js");
-      await insertRows({ projectId: opts.projectId }, dataset, "raw", rows);
-    } catch (err) {
-      return stamp(json({ error: "insert failed", detail: (err as Error).message }, 502));
-    }
-    return stamp(json({ ok: true, accepted: rows.length, dropped }));
-  }
-
-  function GET(req: Request): Response {
-    // Same response shape used for HEAD probes (Next.js auto-derives HEAD
-    // from GET and copies our headers).
-    const verify = opts.vercelVerifyToken ?? req.headers.get("x-vercel-verify") ?? "";
-    return new Response(null, {
-      status: 200,
-      headers: { "x-vercel-verify": verify },
-    });
-  }
-
-  return { POST, GET };
-}
-
-export function parseDrainLine(line: string): Record<string, unknown> {
-  let e: any;
-  try {
-    e = JSON.parse(line);
-  } catch {
-    return {
-      ts: new Date().toISOString(),
-      level: "info",
-      source: "external",
-      message: line.slice(0, 8000),
-      request_id: null,
-      deployment_id: null,
-      path: null,
-      status: null,
-      region: null,
-      raw: line,
-    };
-  }
-  return {
-    ts: new Date(e.timestamp ?? Date.now()).toISOString(),
-    level: normalizeLevel(e.level ?? "info"),
-    source: e.source ?? e.type ?? "lambda",
-    message: typeof e.message === "string" ? e.message.slice(0, 8000) : JSON.stringify(e.message ?? "").slice(0, 8000),
-    request_id: e.requestId ?? null,
-    deployment_id: e.deploymentId ?? null,
-    path: e.proxy?.path ?? null,
-    status: e.proxy?.statusCode ?? null,
-    region: e.proxy?.region ?? null,
-    raw: JSON.stringify(e).slice(0, 16000),
-  };
-}
-
-function normalizeLevel(l: string): string {
-  const v = l.toLowerCase();
-  if (v === "warning") return "warn";
-  if (v === "fatal") return "error";
-  if (["debug", "info", "warn", "error"].includes(v)) return v;
-  return "info";
 }
 
 function validateRecord(r: any): r is BufferedRecord {

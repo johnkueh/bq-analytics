@@ -173,4 +173,4 @@ CREATE TABLE IF NOT EXISTS `@@LOGS_DATASET@@.raw` (
 )
 PARTITION BY DATE(ts)
 CLUSTER BY level, status
-OPTIONS(description="Logs landing zone. Receives both SDK log() calls (uses fields) and Vercel Log Drain lines (uses request_id/path/status/raw).");
+OPTIONS(description="Logs landing zone. Receives server-side SDK log() calls (logger.* / analytics.log(), which use level/source/message/fields). The request_id/path/status/region/raw columns are nullable — populated only when the caller supplies them.");

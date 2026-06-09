@@ -38,9 +38,10 @@ events.feedback      — append-only product feedback. Hot columns: kind, user_i
                        kind ∈ {"bug", "request", "general", ...custom}.
                        JSON: properties. Plain TEXT: subject, message.
 
-logs.raw             — Vercel Log Drain landing zone + SDK log() calls.
-                       Hot columns: ts, level, path, status, message.
-                       JSON: fields (SDK-emitted only).
+logs.raw             — Server-side SDK log() calls (logger.* / analytics.log()).
+                       Hot columns: ts, level, source, message.
+                       JSON: fields. path/status/request_id are nullable
+                       (set only when the caller supplies them).
 ```
 
 All event/log tables partition by `DATE(ts)`. **Always include a `WHERE DATE(ts) > ...` filter** unless you're querying a single recent ID — full-table scans are 10–100× slower and bill against the 1 TB/mo free quota.
@@ -196,26 +197,19 @@ WHERE ts > TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 1 HOUR)
 GROUP BY path ORDER BY errs DESC LIMIT 20;
 ```
 
-### Pageviews from log drain (no client SDK needed)
-
-```sql
-SELECT path, COUNT(*) AS n
-FROM `proj.logs.raw`
-WHERE DATE(ts) > CURRENT_DATE() - 1
-  AND status BETWEEN 200 AND 299
-  AND path IS NOT NULL
-  AND path NOT LIKE '/api/%'
-  AND path NOT LIKE '/_next/%'
-GROUP BY path ORDER BY n DESC LIMIT 50;
-```
+> Note: `logs.raw` contains only what your server code emits via `logger.*` /
+> `analytics.log()`. It does NOT auto-capture every HTTP request — for
+> request-level data (paths, status codes, pageviews) either log it explicitly
+> or use the `vercel-logs` CLI.
 
 ## When to fall back to `vercel-logs` instead
 
-This skill assumes the project has bq-analytics installed and the Log Drain is feeding `logs.raw`. Some cases the drain doesn't cover — use the `vercel-logs` skill (CLI) for these:
+`logs.raw` holds only the lines your code explicitly emits. For anything Vercel
+captures that you didn't log yourself, use the `vercel-logs` skill (CLI):
 
-- **Build logs** — drain captures only runtime stdout/stderr + request lines. Compile errors, install failures, framework warnings during build go through `vercel inspect <url> --logs` or `get_deployment_build_logs` MCP.
-- **Live tail during a deploy** — drain has ~1–2 min batching lag. For "what's happening *right now*" use `vercel logs --follow`.
-- **The first ~10 minutes after a fresh deployment** — drain delivery may not have caught up. Sanity-check with the CLI before assuming the data isn't there.
+- **Vercel runtime logs** — request lines, status codes, and any third-party `console.*` you can't intercept aren't in `logs.raw`. Use `vercel logs` / `get_runtime_logs` MCP.
+- **Build logs** — compile errors, install failures, framework warnings during build go through `vercel inspect <url> --logs` or `get_deployment_build_logs` MCP.
+- **Live tail during a deploy** — for "what's happening *right now*" use `vercel logs --follow`.
 - **Project doesn't have bq-analytics installed yet** — `logs.raw` doesn't exist; everything goes via `vercel logs`.
 
 ## Performance tips
@@ -245,6 +239,5 @@ You won't need this until volume climbs into 100M+ events/mo or queries get slow
 ## If a query is unexpectedly empty
 
 1. Streaming inserts have ~few-second visibility lag. Wait and retry.
-2. Vercel Log Drain has ~5–30s delivery batching. Wait longer for log queries.
-3. Check the `event_id` exists in `events.raw` directly with a `LIMIT 1` lookup — if missing, the SDK call probably failed. `bq-analytics` returns 5xx on insert failure; check the function logs.
-4. Verify the dataset name matches `BQ_EVENTS_DATASET` / `BQ_LOGS_DATASET` env vars (defaults `events` / `logs`).
+2. Check the `event_id` exists in `events.raw` directly with a `LIMIT 1` lookup — if missing, the SDK call probably failed. `bq-analytics` returns 5xx on insert failure; check the function logs.
+3. Verify the dataset name matches `BQ_EVENTS_DATASET` / `BQ_LOGS_DATASET` env vars (defaults `events` / `logs`).

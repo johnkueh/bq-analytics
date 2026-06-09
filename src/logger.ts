@@ -1,16 +1,12 @@
 // Thin wrapper around `Analytics.log()` that also writes to stdout. Designed
 // as a drop-in replacement for `console.{log,warn,error}` in server-side
-// code that wants log lines to land in `<dataset>.logs.raw` directly,
-// without going through a Vercel Log Drain.
+// code that wants log lines to land in `<dataset>.logs.raw` directly.
 //
-// The drain path is fine for low-traffic projects, but at non-trivial
-// invocation counts it becomes expensive: every upstream function
-// invocation triggers an HTTP-proxy event that Vercel ships to the drain,
-// which itself runs as a function. recipes.im measured ~8M drain
-// invocations/month carrying ~70 drain calls per stored row of useful
-// signal. Direct emission from your own code via `logger.info(...)` skips
-// that entirely and stores the same row via the bq-analytics events
-// transport you're already running.
+// This is the way to get server logs into BigQuery: call `logger.info(...)`
+// from your own code and the line is stored via the bq-analytics transport
+// you're already running. Note this captures only what you explicitly emit —
+// Vercel runtime logs and third-party `console.*` you can't intercept are
+// not collected here; use the `vercel-logs` CLI for those.
 
 import type { Analytics } from "./core.js";
 

@@ -13,7 +13,7 @@ pnpm add bq-analytics
 - **AI-native by design.** `bq query` is the interface. Claude / Cursor / any agent can read your real product data, run conversion funnels, and debug user issues — no hosted dashboard, no proprietary query language.
 - **~$0/mo at indie scale.** 5M events/month fits inside BigQuery's free tiers. PostHog Cloud at the same volume is ~$153/mo. Your data lives in your own GCP project — migrate to ClickHouse / DuckDB / Tinybird with one `bq extract`.
 - **One SDK, every runtime.** Next.js (Vercel), Express / Hono / Fastify, Expo / React Native, browser, Node CLI — same `track / identify / group / log / feedback` shape, same BigQuery schema.
-- **No queue infra to run.** Browser and RN persist failed batches locally; Vercel Log Drain retries server logs at-least-once. Server-side `track()` durability matches PostHog / Segment / Amplitude — see the operations details below.
+- **No queue infra to run.** Browser and RN persist failed batches locally and retry on next load. Server-side `track()` durability matches PostHog / Segment / Amplitude via the same flush patterns — see the operations details below.
 - **Feature flags + release config built in.** Edge Config-backed flags and Expo force-update / what's-new prompts ship in the same package. Exposures auto-track for impact analysis.
 - **No service-account keys.** Vercel OIDC → GCP Workload Identity Federation. No JSON keys to rotate.
 
@@ -39,8 +39,8 @@ The fastest path is via the Claude Code marketplace — Claude drives the instal
 ```sh
 pnpm add bq-analytics
 
-# One-shot per project: BQ datasets + tables, Vercel OIDC, IAM bindings, log drain
-TEAM_SLUG=acme PROJECT_NAME=my-app PROJECT_DOMAIN=www.example.com \
+# One-shot per project: BQ datasets + tables, Vercel OIDC, IAM bindings
+TEAM_SLUG=acme PROJECT_NAME=my-app \
   VERCEL_TOKEN=... \
   ./node_modules/bq-analytics/scripts/setup-bq-oidc.sh --gcp my-gcp-project
 ```
@@ -50,9 +50,6 @@ Then in your Next.js app:
 ```ts
 // src/app/api/track/route.ts
 export { POST } from "bq-analytics/next/track-route";
-
-// src/app/api/internal/log-drain/route.ts
-export { POST } from "bq-analytics/next/log-drain-route";
 
 // anywhere in server code
 import { Analytics, bqTransport } from "bq-analytics";
@@ -101,9 +98,9 @@ The bundled [`claude-skills/query/SKILL.md`](claude-skills/query) gives agents p
 | Module | What it adds | Required? |
 |---|---|---|
 | `bq-analytics` | Core SDK — `track / identify / group / log / feedback / scope` + `bqTransport` / `httpTransport` | ✅ |
-| `bq-analytics/next` | Next.js route handlers (`/api/track`, log drain, flags, release config) | for Next |
+| `bq-analytics/next` | Next.js route handlers (`/api/track`, flags, release config) | for Next |
 | `bq-analytics/pino` | pino transport for Express / Fastify / Hono / raw Node | for non-Next |
-| `bq-analytics/logger` | `createLogger(analytics)` — `console`-shaped wrapper around `analytics.log()` for server code that wants log lines in BQ without a Vercel Log Drain | optional |
+| `bq-analytics/logger` | `createLogger(analytics)` — `console`-shaped wrapper around `analytics.log()`; the way to get server log lines into BQ | optional |
 | `bq-analytics/browser` | `browserTransport`, `attachBrowserAutoFlush`, `attachWindowErrorHandler` | for web |
 | `bq-analytics/react-native` | `reactNativeTransport`, `attachExpoErrorHandler`, `attachAppStateFlush` | for RN/Expo |
 | `bq-analytics/cli` | `attachCliHooks` — uncaught + unhandled + SIGINT/SIGTERM | for CLI |
@@ -129,21 +126,6 @@ export const POST = createTrackRoute({
   ),
 });
 
-// src/app/api/internal/log-drain/route.ts
-//
-// Edge runtime is strongly recommended — Vercel's `lambda` source emits
-// START / END / REPORT lines for every function call, which the drain
-// then ships back to itself. `edge` runtime does not emit those lines, so
-// the loop dies at the source. See `createLogDrainRoute` JSDoc.
-export const runtime = "edge";
-
-import { createLogDrainRoute } from "bq-analytics/next";
-export const { POST, GET } = createLogDrainRoute({
-  projectId: process.env.GCP_PROJECT_ID!,
-  secret: process.env.LOG_DRAIN_SECRET!,
-  vercelVerifyToken: process.env.VERCEL_VERIFY_TOKEN,
-});
-
 // src/lib/analytics.ts — server singleton
 import { Analytics, bqTransport } from "bq-analytics";
 declare global { var __bqa: Analytics | undefined; }
@@ -161,9 +143,7 @@ analytics().track("foo", { ... }, { userId });
 
 `flushAfter` schedules `analytics.flush()` to run after the response is sent (via Next's `after()` → `waitUntil`). Without it, buffered records can be lost when a serverless instance is recycled. Use it in every Next route handler that emits events; `bq-analytics/hono`'s `honoFlushMiddleware` covers the same ground for Hono apps.
 
-The setup script provisions the Vercel Log Drain pointed at `/api/internal/log-drain` automatically.
-
-The drain is the right path when you can't intercept stdout from third-party code that uses `console.*` directly. For your own server code, `bq-analytics/logger` is usually cheaper — every Vercel function invocation triggers a drain HTTP-proxy event, so at non-trivial traffic the drain itself becomes the largest line item in your Vercel function-invocations bill. Direct emission via `logger.info(...)` skips that entirely:
+To get server logs into BigQuery, use `bq-analytics/logger` — a `console`-shaped wrapper that emits each log line directly to `logs.raw` via the same transport that handles `events.raw`. Direct emission keeps logging off the per-invocation HTTP path:
 
 ```ts
 // src/lib/logger.ts
@@ -293,14 +273,14 @@ RN/Expo SDK ─┼─ POST /api/track ──────▶│ events.user_group
 CLI scripts ─┘                         │   + views: events.users,  │
 server SDK ─── direct insertAll ──────▶│           groups_current  │
                                        │                           │
-Vercel Log ──── /api/internal/         │ logs.raw                  │
-Drain          log-drain ─────────────▶│                           │
+server logger ─ direct insertAll ─────▶│ logs.raw                  │
+                                       │                           │
                                        └──────────────────────────┘
                                                  ▲
                                                  │  bq query  (CLI / Claude)
 ```
 
-Two pipelines: **events.\*** (explicit product events from any client, JSON property column → never migrate) and **logs.\*** (implicit Vercel runtime captures via Log Drain — replaces Vercel's 1–3 day log retention with your BQ partition policy).
+Two pipelines: **events.\*** (explicit product events from any client, JSON property column → never migrate) and **logs.\*** (server log lines emitted explicitly via `logger.*` / `analytics.log()` — replaces Vercel's 1–3 day log retention with your BQ partition policy).
 
 ## Cost (5M events/month, indie scale)
 
@@ -310,10 +290,8 @@ Two pipelines: **events.\*** (explicit product events from any client, JSON prop
 | BigQuery storage | ~$0.03 (60 GB active × $0.02/GiB) |
 | BigQuery queries | $0 (under 1 TB free) |
 | Vercel function — `/api/track` (5M × 10 ms) | ~$0.20 |
-| Vercel function — drain handler (~5k batches × 50 ms) | ~$0.01 |
 | Vercel Observability log overage | ~$0.13 (1.25 GB × $0.50/GiB after 1 GB free) |
-| Vercel Log Drain delivery | $0 (Pro included) |
-| **Total** | **~$0.40 / mo** |
+| **Total** | **~$0.39 / mo** |
 
 PostHog Cloud at 5M: ~$153/mo. ~400× cheaper. Want PostHog's UI and replays? Use PostHog. Want event analytics + flags an AI agent can query and operate? This.
 
@@ -594,7 +572,6 @@ Cohorts slice by `app_version` / `build_number` / `runtime_version` traits on `i
 | Browser → `/api/track` | Recovered: failed batches persist to `localStorage`, retried on next page load | Same as in-flight |
 | RN/Expo → `/api/track` | Recovered: failed batches persist to `AsyncStorage`, retried on next app launch | Same as in-flight |
 | Server SDK → BQ direct | **Possible loss** if the function instance dies between buffered `track()` and next `flush()`. Mitigation: `flushAt: 1` or `await flush()` (or `after(() => flush())` on Vercel) | **Possible loss** — `/api/track` returns 5xx, no server-side queue |
-| Vercel Log Drain → handler → BQ | At-least-once: Vercel retries on 5xx | At-least-once: same retry path |
 | CLI scripts → `/api/track` | Script process owns retry | If `/api/track` returns 5xx, the call throws — script can retry |
 
 **Server-side gap is identical to PostHog / Segment / Amplitude** — verified against their docs and source. None of them ship a Redis/disk durability layer in the SDK. Hosted tools' edge is that their **ingest endpoints are Kafka-backed**, so an event durably persists even if the analytics DB is down. We don't have that — `/api/track` writes straight to BQ. BigQuery's published streaming SLA is 99.99%, so practical loss is bounded. If you ever need true at-least-once for revenue-critical events, put a buffer in front: Upstash Redis + a QStash cron flusher (~50 lines, opt-in).
